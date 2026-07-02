@@ -548,6 +548,7 @@ function ThreadComposer({
   const [prompt, setPrompt] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [isComposing, setIsComposing] = useState(false);
   const [statusText, setStatusText] = useState("Ready");
 
   useEffect(() => {
@@ -618,9 +619,17 @@ function ThreadComposer({
       <div className="composer-shell">
         <textarea
           className="prompt-box"
+          lang="zh-CN"
+          spellCheck={false}
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
+          onCompositionStart={() => setIsComposing(true)}
+          onCompositionEnd={(event) => {
+            setIsComposing(false);
+            setPrompt(event.currentTarget.value);
+          }}
           onKeyDown={(event) => {
+            if (isComposing || event.nativeEvent.isComposing || event.key === "Process") return;
             if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
               event.preventDefault();
               void start();

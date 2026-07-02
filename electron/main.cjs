@@ -12,6 +12,37 @@ const sessionsDir = path.join(codexHome, "sessions");
 const stateDb = path.join(codexHome, "state_5.sqlite");
 const runningCodex = new Map();
 
+function configureLinuxInputMethod() {
+  if (process.platform !== "linux") return;
+
+  const xModifierMatch = String(process.env.XMODIFIERS || "").match(/@im=([^;]+)/i);
+  const configured = [
+    process.env.GTK_IM_MODULE,
+    process.env.QT_IM_MODULE,
+    xModifierMatch?.[1]
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase());
+
+  const fallback = fsSync.existsSync(path.join(os.homedir(), ".config", "fcitx5")) ||
+    fsSync.existsSync(path.join(os.homedir(), ".config", "fcitx"))
+    ? "fcitx"
+    : fsSync.existsSync(path.join(os.homedir(), ".config", "ibus"))
+      ? "ibus"
+      : null;
+  const inputMethod = configured.find((value) => value === "fcitx" || value === "ibus") || fallback;
+
+  if (inputMethod) {
+    process.env.GTK_IM_MODULE ||= inputMethod;
+    process.env.QT_IM_MODULE ||= inputMethod;
+    process.env.XMODIFIERS ||= `@im=${inputMethod}`;
+  }
+
+  app.commandLine.appendSwitch("enable-wayland-ime");
+}
+
+configureLinuxInputMethod();
+
 function expandHome(candidate) {
   if (!candidate) return candidate;
   if (candidate === "~") return os.homedir();
