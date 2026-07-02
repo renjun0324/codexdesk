@@ -729,6 +729,38 @@ async function getUsage() {
 
 function summarizeRunRecord(record) {
   const payload = record?.payload ?? {};
+  const item = record?.item ?? {};
+
+  if (record?.type === "item.completed") {
+    if (item.type === "agent_message" && item.text) {
+      return { kind: "message", role: "assistant", phase: null, text: item.text };
+    }
+    if (item.type === "user_message" && item.text) {
+      return { kind: "message", role: "user", phase: null, text: item.text };
+    }
+    if (item.type === "tool_call") {
+      return { kind: "tool", text: `${item.name || "tool"} ${item.arguments || ""}`.trim() };
+    }
+    if (item.type === "tool_call_output") {
+      return { kind: "tool_output", text: truncateText(item.output || "", 4000) };
+    }
+    if (item.type === "error") {
+      return { kind: "event", text: item.message || "error" };
+    }
+  }
+
+  if (record?.type === "turn.completed") {
+    return {
+      kind: "usage",
+      usage: {
+        total: normalizeTokenUsage(record.usage),
+        last: normalizeTokenUsage(record.usage),
+        modelContextWindow: null
+      },
+      rateLimits: null
+    };
+  }
+
   if (record?.type === "response_item" && payload.type === "message") {
     const text = extractText(payload.content).trim();
     if (text && (payload.role === "assistant" || payload.role === "user")) {
@@ -802,7 +834,7 @@ ipcMain.handle("codex:run", (event, options) => {
   const model = String(options?.model || "").trim();
   const sessionId = String(options?.sessionId || "").trim();
   const args = sessionId
-    ? ["exec", "resume", "--json", "--all"]
+    ? ["exec", "resume", "--json", "--all", "--skip-git-repo-check"]
     : ["exec", "--json", "--color", "never", "-C", cwd, "--skip-git-repo-check"];
 
   if (model) args.push("-m", model);
