@@ -26,7 +26,6 @@ import type {
 } from "./types";
 
 type Tab = "thread" | "usage";
-type ComposerMode = "resume" | "new";
 
 const numberFormat = new Intl.NumberFormat("zh-CN");
 const shortNumber = new Intl.NumberFormat("zh-CN", {
@@ -411,44 +410,59 @@ function ThreadComposer({
   selected: SessionSummary | null;
   onDone: () => void;
 }) {
-  const [mode, setMode] = useState<ComposerMode>(selected ? "resume" : "new");
   const [cwd, setCwd] = useState(selected?.cwd || "");
   const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [statusText, setStatusText] = useState("Ready");
   const [events, setEvents] = useState<CodexRunEvent[]>([]);
 
   useEffect(() => {
-    setMode(selected ? "resume" : "new");
     if (selected?.cwd) setCwd(selected.cwd);
   }, [selected?.cwd, selected?.id]);
 
   useEffect(() => {
     return window.codexDesk.onCodexEvent((event) => {
       setEvents((current) => [...current, event]);
+      if (event.kind === "started") {
+        setStatusText("Running");
+      }
       if (event.kind === "done" || event.kind === "error") {
         setRunId(null);
+        setStarting(false);
+        setStatusText(
+          event.kind === "error"
+            ? "Failed"
+            : event.code && event.code !== 0
+              ? `Exited ${event.code}`
+              : "Done"
+        );
         onDone();
       }
     });
   }, [onDone]);
 
-  const isResume = mode === "resume" && Boolean(selected);
-
   const start = async () => {
     const text = prompt.trim();
-    if (!text || runId) return;
+    if (!text || runId || starting) return;
+    const targetSessionId = selected?.id || undefined;
     setEvents([]);
+    setStarting(true);
+    setStatusText(targetSessionId ? "Starting current session" : "Starting new session");
     try {
       const result = await window.codexDesk.runCodex({
         prompt: text,
         cwd: cwd || selected?.cwd || undefined,
         model: model || undefined,
-        sessionId: isResume ? selected?.id : undefined
+        sessionId: targetSessionId
       });
       setPrompt("");
       setRunId(result.runId);
+      setStatusText("Running");
     } catch (error) {
+      setStarting(false);
+      setStatusText("Failed");
       setEvents([
         {
           runId: "local",
@@ -463,8 +477,11 @@ function ThreadComposer({
     if (!runId) return;
     await window.codexDesk.cancelRun(runId);
     setRunId(null);
+    setStarting(false);
+    setStatusText("Stopped");
   };
   const composerCwd = cwd || selected?.cwd || "";
+  const canSend = Boolean(prompt.trim()) && !runId && !starting;
 
   return (
     <section className="thread-composer" aria-label="Codex composer">
@@ -505,23 +522,10 @@ function ThreadComposer({
               <Terminal size={15} />
               Codex exec
             </span>
-            <div className="segmented compact">
-              <button
-                className={mode === "resume" ? "selected" : ""}
-                type="button"
-                onClick={() => setMode("resume")}
-                disabled={!selected}
-              >
-                Resume
-              </button>
-              <button
-                className={mode === "new" ? "selected" : ""}
-                type="button"
-                onClick={() => setMode("new")}
-              >
-                New
-              </button>
-            </div>
+            <span className="target-pill" title={selected?.id || "new session"}>
+              {selected ? "当前会话" : "新会话"}
+            </span>
+            <span className="composer-status">{statusText}</span>
           </div>
 
           <div className="composer-right">
@@ -539,10 +543,7 @@ function ThreadComposer({
               placeholder={selected?.model || "model"}
               title="model"
             />
-            <span className="status-pill" title={isResume && selected ? selected.id : "new session"}>
-              {runId ? "Running" : isResume ? "Resume" : "New"}
-            </span>
-            <button className="icon-button run" type="button" title="运行" onClick={start} disabled={!!runId}>
+            <button className="icon-button run" type="button" title="发送" onClick={start} disabled={!canSend}>
               <Play size={18} />
             </button>
             <button className="icon-button stop" type="button" title="停止" onClick={cancel} disabled={!runId}>

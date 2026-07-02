@@ -706,42 +706,9 @@ h2 {
   background: #eef1eb;
 }
 
-.segmented {
-  display: inline-grid;
-  grid-template-columns: 1fr 1fr;
-  height: 38px;
-  padding: 3px;
-  background: #dfe4dc;
-  border-radius: 8px;
-}
-
-.segmented.compact {
-  height: 32px;
-  padding: 2px;
-}
-
-.segmented button {
-  min-width: 82px;
-  padding: 0 12px;
-  color: var(--ink);
-  background: transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.segmented.compact button {
-  min-width: 64px;
-  padding: 0 9px;
-  font-size: 12px;
-}
-
-.segmented button.selected {
-  background: white;
-  box-shadow: 0 1px 4px rgb(20 25 22 / 10%);
-}
-
 .menu-pill,
-.status-pill {
+.target-pill,
+.composer-status {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -756,11 +723,20 @@ h2 {
   white-space: nowrap;
 }
 
-.status-pill {
-  max-width: 92px;
+.target-pill {
+  max-width: 120px;
   overflow: hidden;
   color: var(--accent);
   font-weight: 700;
+  text-overflow: ellipsis;
+}
+
+.composer-status {
+  max-width: 190px;
+  overflow: hidden;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
   text-overflow: ellipsis;
 }
 
