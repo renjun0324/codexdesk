@@ -1,4 +1,4 @@
-# Codexs Max
+# Codex Desk
 
 Linux desktop shell for local Codex CLI history.
 

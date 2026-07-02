@@ -103,7 +103,7 @@ function createWindow() {
     height: 860,
     minWidth: 1040,
     minHeight: 680,
-    title: "Codexs Max",
+    title: "Codex Desk",
     backgroundColor: "#f4f5f0",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -436,7 +436,7 @@ function queryAppServerUsage() {
       method: "initialize",
       id: 1,
       params: {
-        clientInfo: { name: "codexsmax", version: "0.1.0" },
+        clientInfo: { name: "codex-desk", version: "0.1.0" },
         capabilities: {
           experimentalApi: true,
           requestAttestation: false,

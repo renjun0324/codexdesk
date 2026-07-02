@@ -927,7 +927,7 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark">C</span>
           <div>
-            <strong>Codexs Max</strong>
+            <strong>Codex Desk</strong>
             <small>Linux desktop</small>
           </div>
         </div>
