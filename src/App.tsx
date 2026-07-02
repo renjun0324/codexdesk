@@ -236,6 +236,7 @@ function SessionPane({
 }) {
   const [liveMessages, setLiveMessages] = useState<SessionMessage[]>([]);
   const [runStatus, setRunStatus] = useState("");
+  const scrollRef = useRef<HTMLElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -251,9 +252,20 @@ function SessionPane({
     return [...savedMessages, ...pendingMessages];
   }, [liveMessages, session?.messages]);
 
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+    window.requestAnimationFrame(() => {
+      const node = scrollRef.current;
+      if (node) {
+        node.scrollTo({ top: node.scrollHeight, behavior });
+        return;
+      }
+      bottomRef.current?.scrollIntoView({ block: "end", behavior });
+    });
+  }, []);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, runStatus]);
+    scrollToLatest("smooth");
+  }, [messages.length, runStatus, scrollToLatest, selected?.id, session?.updatedAt]);
 
   const handleRunStart = useCallback((text: string) => {
     setLiveMessages((current) => [...current, createLiveMessage("user", text, "sent")]);
@@ -293,7 +305,7 @@ function SessionPane({
   if (!session) {
     return (
       <main className="content-pane thread-pane">
-        <section className="thread-scroll">
+        <section className="thread-scroll" ref={scrollRef}>
           {messages.length ? (
             <section className="messages live-messages">
               {messages.map((message) => (
@@ -316,7 +328,7 @@ function SessionPane({
 
   return (
     <main className="content-pane thread-pane">
-      <section className="thread-scroll">
+      <section className="thread-scroll" ref={scrollRef}>
         <section className="session-header">
           <div>
             <p className="eyebrow">{session.model || session.source || "codex"}</p>
@@ -347,6 +359,22 @@ function SessionPane({
           </section>
         ) : null}
 
+        {session.events.length ? (
+          <details className="tool-drawer">
+            <summary>工具记录 {session.events.length}</summary>
+            <section className="tool-section">
+              {session.events.map((event) => (
+                <details key={event.id}>
+                  <summary>
+                    {event.kind} / {event.name}
+                  </summary>
+                  <pre>{event.text}</pre>
+                </details>
+              ))}
+            </section>
+          </details>
+        ) : null}
+
         <section className="messages">
           {messages.map((message) => (
             <MessageBubble key={message.id} message={message} />
@@ -354,20 +382,6 @@ function SessionPane({
           {runStatus ? <div className="thread-run-status">{runStatus}</div> : null}
           <div ref={bottomRef} />
         </section>
-
-        {session.events.length ? (
-          <section className="tool-section">
-            <h2>Tool Events</h2>
-            {session.events.map((event) => (
-              <details key={event.id}>
-                <summary>
-                  {event.kind} / {event.name}
-                </summary>
-                <pre>{event.text}</pre>
-              </details>
-            ))}
-          </section>
-        ) : null}
       </section>
       <ThreadComposer selected={selected} onStart={handleRunStart} onEvent={handleRunEvent} onDone={onRunDone} />
     </main>

@@ -640,13 +640,30 @@ h2 {
   padding: 6px 0;
 }
 
+.tool-drawer {
+  margin: 0 0 18px;
+  color: var(--muted);
+  background: rgb(255 255 255 / 46%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.tool-drawer > summary {
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .tool-section {
-  margin-top: 22px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 0 10px 10px;
 }
 
 .tool-section details {
   margin-bottom: 9px;
-  background: rgb(255 255 255 / 60%);
+  background: rgb(255 255 255 / 72%);
   border: 1px solid var(--line);
   border-radius: 8px;
 }
