@@ -10,7 +10,7 @@ import {
   Square,
   Terminal
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -25,8 +25,8 @@ import type {
   UsageSnapshot
 } from "./types";
 
-type Tab = "sessions" | "compose" | "usage";
-type ComposerMode = "new" | "resume";
+type Tab = "thread" | "usage";
+type ComposerMode = "resume" | "new";
 
 const numberFormat = new Intl.NumberFormat("zh-CN");
 const shortNumber = new Intl.NumberFormat("zh-CN", {
@@ -218,80 +218,84 @@ function SessionPane({
   loading,
   onExport,
   onShowFile,
-  onUseInComposer
+  onRunDone
 }: {
   session: SessionDetail | null;
   selected: SessionSummary | null;
   loading: boolean;
   onExport: () => void;
   onShowFile: () => void;
-  onUseInComposer: () => void;
+  onRunDone: () => void;
 }) {
   if (loading) return <main className="content-pane loading-pane">Loading...</main>;
   if (!session) {
     return (
-      <main className="content-pane empty-pane">
-        <MessageSquare size={28} />
-        <strong>{selected ? selected.title : "No session"}</strong>
+      <main className="content-pane thread-pane">
+        <section className="thread-scroll empty-thread">
+          <div className="empty-state">
+            <MessageSquare size={28} />
+            <strong>{selected ? selected.title : "No session"}</strong>
+          </div>
+        </section>
+        <ThreadComposer selected={selected} onDone={onRunDone} />
       </main>
     );
   }
 
   return (
-    <main className="content-pane">
-      <section className="session-header">
-        <div>
-          <p className="eyebrow">{session.model || session.source || "codex"}</p>
-          <h1>{session.title}</h1>
-          <div className="path-line">{session.cwd || basename(session.filePath)}</div>
-        </div>
-        <div className="header-actions">
-          <button className="icon-button" type="button" title="导出 Markdown" onClick={onExport}>
-            <Download size={18} />
-          </button>
-          <button className="icon-button" type="button" title="定位 JSONL" onClick={onShowFile}>
-            <FolderOpen size={18} />
-          </button>
-          <button className="text-button" type="button" onClick={onUseInComposer}>
-            <Terminal size={16} />
-            Resume
-          </button>
-        </div>
-      </section>
-
-      <section className="session-stats">
-        <Metric label="messages" value={session.messages.length} />
-        <Metric label="tools" value={session.events.length} />
-        <Metric label="tokens" value={session.tokenUsage?.total?.totalTokens || 0} />
-        <Metric label="updated" value={formatDate(session.updatedAt)} />
-      </section>
-
-      {session.rateLimits ? (
-        <section className="inline-usage">
-          <RateBar label="primary" value={session.rateLimits.primary} />
-          <RateBar label="secondary" value={session.rateLimits.secondary} />
+    <main className="content-pane thread-pane">
+      <section className="thread-scroll">
+        <section className="session-header">
+          <div>
+            <p className="eyebrow">{session.model || session.source || "codex"}</p>
+            <h1>{session.title}</h1>
+            <div className="path-line">{session.cwd || basename(session.filePath)}</div>
+          </div>
+          <div className="header-actions">
+            <button className="icon-button" type="button" title="导出 Markdown" onClick={onExport}>
+              <Download size={18} />
+            </button>
+            <button className="icon-button" type="button" title="定位 JSONL" onClick={onShowFile}>
+              <FolderOpen size={18} />
+            </button>
+          </div>
         </section>
-      ) : null}
 
-      <section className="messages">
-        {session.messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
-        ))}
-      </section>
+        <section className="session-stats">
+          <Metric label="messages" value={session.messages.length} />
+          <Metric label="tools" value={session.events.length} />
+          <Metric label="tokens" value={session.tokenUsage?.total?.totalTokens || 0} />
+          <Metric label="updated" value={formatDate(session.updatedAt)} />
+        </section>
 
-      {session.events.length ? (
-        <section className="tool-section">
-          <h2>Tool Events</h2>
-          {session.events.map((event) => (
-            <details key={event.id}>
-              <summary>
-                {event.kind} / {event.name}
-              </summary>
-              <pre>{event.text}</pre>
-            </details>
+        {session.rateLimits ? (
+          <section className="inline-usage">
+            <RateBar label="primary" value={session.rateLimits.primary} />
+            <RateBar label="secondary" value={session.rateLimits.secondary} />
+          </section>
+        ) : null}
+
+        <section className="messages">
+          {session.messages.map((message) => (
+            <MessageBubble key={message.id} message={message} />
           ))}
         </section>
-      ) : null}
+
+        {session.events.length ? (
+          <section className="tool-section">
+            <h2>Tool Events</h2>
+            {session.events.map((event) => (
+              <details key={event.id}>
+                <summary>
+                  {event.kind} / {event.name}
+                </summary>
+                <pre>{event.text}</pre>
+              </details>
+            ))}
+          </section>
+        ) : null}
+      </section>
+      <ThreadComposer selected={selected} onDone={onRunDone} />
     </main>
   );
 }
@@ -400,14 +404,14 @@ function UsagePane({
   );
 }
 
-function ComposerPane({
+function ThreadComposer({
   selected,
   onDone
 }: {
   selected: SessionSummary | null;
   onDone: () => void;
 }) {
-  const [mode, setMode] = useState<ComposerMode>("new");
+  const [mode, setMode] = useState<ComposerMode>(selected ? "resume" : "new");
   const [cwd, setCwd] = useState(selected?.cwd || "");
   const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -415,8 +419,9 @@ function ComposerPane({
   const [events, setEvents] = useState<CodexRunEvent[]>([]);
 
   useEffect(() => {
+    setMode(selected ? "resume" : "new");
     if (selected?.cwd) setCwd(selected.cwd);
-  }, [selected?.cwd]);
+  }, [selected?.cwd, selected?.id]);
 
   useEffect(() => {
     return window.codexDesk.onCodexEvent((event) => {
@@ -428,16 +433,30 @@ function ComposerPane({
     });
   }, [onDone]);
 
+  const isResume = mode === "resume" && Boolean(selected);
+
   const start = async () => {
-    if (!prompt.trim() || runId) return;
+    const text = prompt.trim();
+    if (!text || runId) return;
     setEvents([]);
-    const result = await window.codexDesk.runCodex({
-      prompt,
-      cwd: cwd || selected?.cwd || undefined,
-      model: model || undefined,
-      sessionId: mode === "resume" ? selected?.id : undefined
-    });
-    setRunId(result.runId);
+    try {
+      const result = await window.codexDesk.runCodex({
+        prompt: text,
+        cwd: cwd || selected?.cwd || undefined,
+        model: model || undefined,
+        sessionId: isResume ? selected?.id : undefined
+      });
+      setPrompt("");
+      setRunId(result.runId);
+    } catch (error) {
+      setEvents([
+        {
+          runId: "local",
+          kind: "error",
+          text: error instanceof Error ? error.message : String(error)
+        }
+      ]);
+    }
   };
 
   const cancel = async () => {
@@ -445,60 +464,94 @@ function ComposerPane({
     await window.codexDesk.cancelRun(runId);
     setRunId(null);
   };
+  const composerCwd = cwd || selected?.cwd || "";
 
   return (
-    <main className="content-pane composer-pane">
-      <section className="session-header compact">
-        <div>
-          <p className="eyebrow">codex exec</p>
-          <h1>对话</h1>
-          <div className="path-line">{mode === "resume" && selected ? selected.id : cwd || "~"}</div>
-        </div>
-        <div className="header-actions">
-          <button className="icon-button run" type="button" title="运行" onClick={start} disabled={!!runId}>
-            <Play size={18} />
-          </button>
-          <button className="icon-button stop" type="button" title="停止" onClick={cancel} disabled={!runId}>
-            <Square size={16} />
-          </button>
-        </div>
-      </section>
+    <section className="thread-composer" aria-label="Codex composer">
+      {events.length ? (
+        <section className="run-output compact">
+          {events.map((event, index) => (
+            <RunEventLine key={`${event.runId}-${index}`} event={event} />
+          ))}
+        </section>
+      ) : null}
 
-      <section className="composer-controls">
-        <div className="segmented">
-          <button
-            className={mode === "new" ? "selected" : ""}
-            type="button"
-            onClick={() => setMode("new")}
-          >
-            New
-          </button>
-          <button
-            className={mode === "resume" ? "selected" : ""}
-            type="button"
-            onClick={() => setMode("resume")}
-            disabled={!selected}
-          >
-            Resume
-          </button>
+      <div className="composer-shell">
+        <textarea
+          className="prompt-box"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+              event.preventDefault();
+              void start();
+            }
+          }}
+          placeholder="Ask Codex anything"
+        />
+
+        <div className="composer-toolbar">
+          <div className="composer-left">
+            <button
+              className="icon-button ghost"
+              type="button"
+              title="打开工作目录"
+              onClick={() => composerCwd && window.codexDesk.openPath(composerCwd)}
+              disabled={!composerCwd}
+            >
+              <FolderOpen size={16} />
+            </button>
+            <span className="menu-pill">
+              <Terminal size={15} />
+              Codex exec
+            </span>
+            <div className="segmented compact">
+              <button
+                className={mode === "resume" ? "selected" : ""}
+                type="button"
+                onClick={() => setMode("resume")}
+                disabled={!selected}
+              >
+                Resume
+              </button>
+              <button
+                className={mode === "new" ? "selected" : ""}
+                type="button"
+                onClick={() => setMode("new")}
+              >
+                New
+              </button>
+            </div>
+          </div>
+
+          <div className="composer-right">
+            <input
+              className="mini-input cwd-field"
+              value={cwd}
+              onChange={(event) => setCwd(event.target.value)}
+              placeholder={selected?.cwd || "cwd"}
+              title="cwd"
+            />
+            <input
+              className="mini-input model-field"
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              placeholder={selected?.model || "model"}
+              title="model"
+            />
+            <span className="status-pill" title={isResume && selected ? selected.id : "new session"}>
+              {runId ? "Running" : isResume ? "Resume" : "New"}
+            </span>
+            <button className="icon-button run" type="button" title="运行" onClick={start} disabled={!!runId}>
+              <Play size={18} />
+            </button>
+            <button className="icon-button stop" type="button" title="停止" onClick={cancel} disabled={!runId}>
+              <Square size={16} />
+            </button>
+          </div>
         </div>
-        <input value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="cwd" />
-        <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="model" />
-      </section>
-
-      <textarea
-        className="prompt-box"
-        value={prompt}
-        onChange={(event) => setPrompt(event.target.value)}
-        placeholder="输入 prompt"
-      />
-
-      <section className="run-output">
-        {events.map((event, index) => (
-          <RunEventLine key={`${event.runId}-${index}`} event={event} />
-        ))}
-      </section>
-    </main>
+      </div>
+    </section>
   );
 }
 
@@ -529,7 +582,7 @@ function RunEventLine({ event }: { event: CodexRunEvent }) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("sessions");
+  const [tab, setTab] = useState<Tab>("thread");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selected, setSelected] = useState<SessionSummary | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
@@ -539,35 +592,57 @@ export default function App() {
   const [loadingSession, setLoadingSession] = useState(false);
   const [loadingUsage, setLoadingUsage] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [sessionReloadKey, setSessionReloadKey] = useState(0);
 
-  const refreshSessions = async () => {
+  const refreshSessions = useCallback(async () => {
     const next = await window.codexDesk.listSessions();
     setSessions(next);
-    setSelected((current) => current || next[0] || null);
-  };
+    setSelected((current) => {
+      if (!current) return next[0] || null;
+      return next.find((session) => session.id === current.id) || current;
+    });
+  }, []);
 
-  const refreshUsage = async () => {
+  const refreshUsage = useCallback(async () => {
     setLoadingUsage(true);
     try {
       setUsage(await window.codexDesk.getUsage());
     } finally {
       setLoadingUsage(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     refreshSessions();
     refreshUsage();
-  }, []);
+  }, [refreshSessions, refreshUsage]);
 
+  const selectedFilePath = selected?.filePath || null;
   useEffect(() => {
-    if (!selected) return;
+    if (!selectedFilePath) {
+      setDetail(null);
+      return;
+    }
+    let active = true;
     setLoadingSession(true);
     window.codexDesk
-      .readSession(selected.filePath)
-      .then(setDetail)
-      .finally(() => setLoadingSession(false));
-  }, [selected]);
+      .readSession(selectedFilePath)
+      .then((next) => {
+        if (active) setDetail(next);
+      })
+      .finally(() => {
+        if (active) setLoadingSession(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedFilePath, sessionReloadKey]);
+
+  const handleRunDone = useCallback(() => {
+    void Promise.all([refreshSessions(), refreshUsage()]).finally(() => {
+      setSessionReloadKey((value) => value + 1);
+    });
+  }, [refreshSessions, refreshUsage]);
 
   const exportCurrent = async () => {
     if (!selected) return;
@@ -593,13 +668,9 @@ export default function App() {
           </div>
         </div>
         <div className="tabs">
-          <button className={tab === "sessions" ? "active" : ""} type="button" onClick={() => setTab("sessions")}>
+          <button className={tab === "thread" ? "active" : ""} type="button" onClick={() => setTab("thread")}>
             <MessageSquare size={16} />
             会话
-          </button>
-          <button className={tab === "compose" ? "active" : ""} type="button" onClick={() => setTab("compose")}>
-            <Terminal size={16} />
-            对话
           </button>
           <button className={tab === "usage" ? "active" : ""} type="button" onClick={() => setTab("usage")}>
             <BarChart3 size={16} />
@@ -628,21 +699,20 @@ export default function App() {
           onRefresh={refreshSessions}
           onSelect={(session) => {
             setSelected(session);
-            setTab("sessions");
+            setTab("thread");
           }}
         />
 
-        {tab === "sessions" ? (
+        {tab === "thread" ? (
           <SessionPane
             session={detail}
             selected={selected}
             loading={loadingSession}
             onExport={exportCurrent}
             onShowFile={showFile}
-            onUseInComposer={() => setTab("compose")}
+            onRunDone={handleRunDone}
           />
         ) : null}
-        {tab === "compose" ? <ComposerPane selected={selected} onDone={refreshSessions} /> : null}
         {tab === "usage" ? (
           <UsagePane usage={usage} loading={loadingUsage} onRefresh={refreshUsage} />
         ) : null}
