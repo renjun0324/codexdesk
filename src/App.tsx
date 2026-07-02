@@ -554,6 +554,7 @@ function ThreadComposer({
 
   useEffect(() => {
     if (selected?.cwd) setCwd(selected.cwd);
+    setModel("");
   }, [selected?.cwd, selected?.id]);
 
   useEffect(() => {
@@ -615,6 +616,11 @@ function ThreadComposer({
   const composerCwd = cwd || selected?.cwd || "";
   const canSend = Boolean(prompt.trim()) && !runId && !starting;
   const currentPlace = selected ? "当前会话" : "新会话";
+  const inheritedModelLabel = selected?.model
+    ? `跟随当前会话（${selected.model}）`
+    : "跟随 Codex 默认模型";
+  const modelOptions = ["gpt-5-codex", "gpt-5"];
+  const customSessionModel = selected?.model && !modelOptions.includes(selected.model) ? selected.model : null;
 
   return (
     <section className="thread-composer" aria-label="Codex composer">
@@ -673,10 +679,15 @@ function ThreadComposer({
             <label className="setting-field">
               <span>模型</span>
               <select value={model} onChange={(event) => setModel(event.target.value)}>
-                <option value="">默认模型</option>
-                <option value="gpt-5-codex">gpt-5-codex</option>
-                <option value="gpt-5">gpt-5</option>
+                <option value="">{inheritedModelLabel}</option>
+                {customSessionModel ? <option value={customSessionModel}>{customSessionModel}</option> : null}
+                {modelOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
               </select>
+              <small>不选择时不覆盖 CLI 的 session 模型。</small>
             </label>
             <label className="setting-field wide">
               <span>工作目录</span>

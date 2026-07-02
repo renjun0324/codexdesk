@@ -842,6 +842,12 @@ h2 {
   text-transform: uppercase;
 }
 
+.setting-field small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .setting-field input,
 .setting-field select {
   width: 100%;
