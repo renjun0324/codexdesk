@@ -262,6 +262,12 @@ function SessionList({
                 <>
                   <button className="session-main" type="button" onClick={() => onSelect(session)}>
                     <span className="session-title" title={session.title}>{session.title}</span>
+                    {session.cwd ? (
+                      <span className="session-workdir" title={session.cwd}>
+                        <FolderOpen size={12} />
+                        <span>{basename(session.cwd)}</span>
+                      </span>
+                    ) : null}
                     <span className="session-preview" title={session.preview || session.cwd}>
                       {session.preview || session.cwd}
                     </span>
@@ -402,7 +408,9 @@ function SessionPane({
           <div>
             <p className="eyebrow">{session.model || session.source || "codex"}</p>
             <h1>{selected?.title || session.title}</h1>
-            <div className="path-line">{session.cwd || basename(session.filePath)}</div>
+            <div className="path-line" title={session.cwd || session.filePath}>
+              {session.cwd || basename(session.filePath)}
+            </div>
           </div>
           <div className="header-actions">
             <button className="icon-button" type="button" title="导出 Markdown" onClick={onExport}>

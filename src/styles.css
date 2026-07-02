@@ -307,7 +307,7 @@ button:disabled {
   gap: 6px;
   align-items: start;
   width: 100%;
-  min-height: 94px;
+  min-height: 112px;
   padding: 10px;
   color: #e9efe9;
   background: rgb(255 255 255 / 7%);
@@ -390,13 +390,31 @@ button:disabled {
 .session-preview {
   display: -webkit-box;
   overflow: hidden;
-  min-height: 34px;
+  min-height: 18px;
   color: currentColor;
   font-size: 12px;
   line-height: 1.4;
   opacity: 0.74;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
+}
+
+.session-workdir {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  color: currentColor;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  opacity: 0.82;
+}
+
+.session-workdir span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-meta {
