@@ -604,7 +604,6 @@ h2 {
 
 .markdown-body pre,
 .run-message pre,
-.tool-section pre,
 .run-line {
   overflow: auto;
   padding: 12px;
@@ -638,45 +637,6 @@ h2 {
   overflow-x: auto;
   overflow-y: hidden;
   padding: 6px 0;
-}
-
-.tool-drawer {
-  margin: 0 0 18px;
-  color: var(--muted);
-  background: rgb(255 255 255 / 46%);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.tool-drawer > summary {
-  padding: 9px 12px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.tool-section {
-  max-height: 320px;
-  overflow: auto;
-  padding: 0 10px 10px;
-}
-
-.tool-section details {
-  margin-bottom: 9px;
-  background: rgb(255 255 255 / 72%);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.tool-section summary {
-  padding: 10px 12px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.tool-section pre {
-  margin: 0 10px 10px;
 }
 
 .usage-pane {

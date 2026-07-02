@@ -347,7 +347,6 @@ function SessionPane({
 
         <section className="session-stats">
           <Metric label="messages" value={messages.length} />
-          <Metric label="tools" value={session.events.length} />
           <Metric label="tokens" value={session.tokenUsage?.total?.totalTokens || 0} />
           <Metric label="updated" value={formatDate(session.updatedAt)} />
         </section>
@@ -357,22 +356,6 @@ function SessionPane({
             <RateBar label="primary" value={session.rateLimits.primary} />
             <RateBar label="secondary" value={session.rateLimits.secondary} />
           </section>
-        ) : null}
-
-        {session.events.length ? (
-          <details className="tool-drawer">
-            <summary>工具记录 {session.events.length}</summary>
-            <section className="tool-section">
-              {session.events.map((event) => (
-                <details key={event.id}>
-                  <summary>
-                    {event.kind} / {event.name}
-                  </summary>
-                  <pre>{event.text}</pre>
-                </details>
-              ))}
-            </section>
-          </details>
         ) : null}
 
         <section className="messages">
