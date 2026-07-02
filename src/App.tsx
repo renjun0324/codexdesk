@@ -1,5 +1,4 @@
 import {
-  BarChart3,
   Download,
   ExternalLink,
   FolderOpen,
@@ -10,7 +9,7 @@ import {
   Square,
   Terminal
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -24,8 +23,6 @@ import type {
   TokenBreakdown,
   UsageSnapshot
 } from "./types";
-
-type Tab = "thread" | "usage";
 
 const numberFormat = new Intl.NumberFormat("zh-CN");
 const shortNumber = new Intl.NumberFormat("zh-CN", {
@@ -140,6 +137,17 @@ function MessageBubble({ message }: { message: SessionMessage }) {
   );
 }
 
+function createLiveMessage(role: SessionMessage["role"], text: string, phase: string | null): SessionMessage {
+  return {
+    kind: "message",
+    id: `live-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    role,
+    phase,
+    timestamp: new Date().toISOString(),
+    text
+  };
+}
+
 function SessionList({
   sessions,
   selected,
@@ -226,17 +234,82 @@ function SessionPane({
   onShowFile: () => void;
   onRunDone: () => void;
 }) {
+  const [liveMessages, setLiveMessages] = useState<SessionMessage[]>([]);
+  const [runStatus, setRunStatus] = useState("");
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setLiveMessages([]);
+    setRunStatus("");
+  }, [selected?.id]);
+
+  const messages = useMemo(() => {
+    const savedMessages = session?.messages || [];
+    const pendingMessages = liveMessages.filter(
+      (live) => !savedMessages.some((saved) => saved.role === live.role && saved.text === live.text)
+    );
+    return [...savedMessages, ...pendingMessages];
+  }, [liveMessages, session?.messages]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [messages.length, runStatus]);
+
+  const handleRunStart = useCallback((text: string) => {
+    setLiveMessages((current) => [...current, createLiveMessage("user", text, "sent")]);
+    setRunStatus("正在等待 Codex 回答");
+  }, []);
+
+  const handleRunEvent = useCallback((event: CodexRunEvent) => {
+    if (event.kind === "started") {
+      setRunStatus("Codex 正在运行");
+      return;
+    }
+    if (event.kind === "record") {
+      const summary = event.summary;
+      if (summary.kind === "message" && summary.role === "assistant") {
+        setLiveMessages((current) => [
+          ...current,
+          createLiveMessage("assistant", summary.text, summary.phase || "live")
+        ]);
+        setRunStatus("正在接收回答");
+      }
+      if (summary.kind === "usage") {
+        setRunStatus(`已使用 ${formatShort(summary.usage?.total?.totalTokens || 0)} tokens`);
+      }
+      return;
+    }
+    if (event.kind === "stderr" || event.kind === "error") {
+      setLiveMessages((current) => [...current, createLiveMessage("assistant", event.text, "error")]);
+      setRunStatus("运行失败");
+      return;
+    }
+    if (event.kind === "done") {
+      setRunStatus(event.code && event.code !== 0 ? `退出码 ${event.code}` : "已完成，正在刷新会话");
+    }
+  }, []);
+
   if (loading) return <main className="content-pane loading-pane">Loading...</main>;
   if (!session) {
     return (
       <main className="content-pane thread-pane">
-        <section className="thread-scroll empty-thread">
-          <div className="empty-state">
-            <MessageSquare size={28} />
-            <strong>{selected ? selected.title : "No session"}</strong>
-          </div>
+        <section className="thread-scroll">
+          {messages.length ? (
+            <section className="messages live-messages">
+              {messages.map((message) => (
+                <MessageBubble key={message.id} message={message} />
+              ))}
+              {runStatus ? <div className="thread-run-status">{runStatus}</div> : null}
+              <div ref={bottomRef} />
+            </section>
+          ) : (
+            <div className="empty-state empty-thread">
+              <MessageSquare size={28} />
+              <strong>{selected ? selected.title : "No session"}</strong>
+            </div>
+          )}
         </section>
-        <ThreadComposer selected={selected} onDone={onRunDone} />
+        <ThreadComposer selected={selected} onStart={handleRunStart} onEvent={handleRunEvent} onDone={onRunDone} />
       </main>
     );
   }
@@ -261,7 +334,7 @@ function SessionPane({
         </section>
 
         <section className="session-stats">
-          <Metric label="messages" value={session.messages.length} />
+          <Metric label="messages" value={messages.length} />
           <Metric label="tools" value={session.events.length} />
           <Metric label="tokens" value={session.tokenUsage?.total?.totalTokens || 0} />
           <Metric label="updated" value={formatDate(session.updatedAt)} />
@@ -275,9 +348,11 @@ function SessionPane({
         ) : null}
 
         <section className="messages">
-          {session.messages.map((message) => (
+          {messages.map((message) => (
             <MessageBubble key={message.id} message={message} />
           ))}
+          {runStatus ? <div className="thread-run-status">{runStatus}</div> : null}
+          <div ref={bottomRef} />
         </section>
 
         {session.events.length ? (
@@ -294,7 +369,7 @@ function SessionPane({
           </section>
         ) : null}
       </section>
-      <ThreadComposer selected={selected} onDone={onRunDone} />
+      <ThreadComposer selected={selected} onStart={handleRunStart} onEvent={handleRunEvent} onDone={onRunDone} />
     </main>
   );
 }
@@ -403,11 +478,72 @@ function UsagePane({
   );
 }
 
+function UsageMiniPanel({
+  usage,
+  loading,
+  onRefresh
+}: {
+  usage: UsageSnapshot | null;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  const primary = usage?.latest?.rateLimits?.primary || null;
+  const total = usage ? usage.summary.totalTokens : 0;
+  const max = usage ? usage.summary.maxTokens : 0;
+  const reset = primary?.resetsAt ? formatFullDate(primary.resetsAt * 1000) : "-";
+
+  return (
+    <aside className="usage-mini" aria-label="usage">
+      <div className="usage-mini-top">
+        <h2>用量</h2>
+        <button className="icon-button" type="button" title="刷新" onClick={onRefresh}>
+          <RefreshCcw size={16} className={loading ? "spin" : ""} />
+        </button>
+      </div>
+
+      <section className="usage-mini-metrics">
+        <Metric label="total" value={formatShort(total)} />
+        <Metric label="max" value={formatShort(max)} />
+        <div className="metric usage-reset">
+          <span>reset</span>
+          <strong>{reset}</strong>
+        </div>
+      </section>
+
+      {primary ? (
+        <div className="usage-mini-usage">
+          <div className="rate-row">
+            <div className="rate-meta">
+              <span>primary used</span>
+              <strong>{Math.max(0, Math.min(100, primary.usedPercent || 0)).toFixed(1)}%</strong>
+            </div>
+            <div className="meter" aria-label="primary rate limit used">
+              <div style={{ width: `${Math.max(0, Math.min(100, primary.usedPercent || 0))}%` }} />
+            </div>
+            <div className="muted micro">
+              {primary.windowMinutes ? `${primary.windowMinutes} min` : "window -"}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="muted usage-mini-meta">
+        <span className="status-dot live" />
+        <span>最近刷新：{formatFullDate(usage?.summary.lastUpdated)}</span>
+      </div>
+    </aside>
+  );
+}
+
 function ThreadComposer({
   selected,
+  onStart,
+  onEvent,
   onDone
 }: {
   selected: SessionSummary | null;
+  onStart: (prompt: string) => void;
+  onEvent: (event: CodexRunEvent) => void;
   onDone: () => void;
 }) {
   const [cwd, setCwd] = useState(selected?.cwd || "");
@@ -416,7 +552,6 @@ function ThreadComposer({
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [statusText, setStatusText] = useState("Ready");
-  const [events, setEvents] = useState<CodexRunEvent[]>([]);
 
   useEffect(() => {
     if (selected?.cwd) setCwd(selected.cwd);
@@ -424,7 +559,7 @@ function ThreadComposer({
 
   useEffect(() => {
     return window.codexDesk.onCodexEvent((event) => {
-      setEvents((current) => [...current, event]);
+      onEvent(event);
       if (event.kind === "started") {
         setStatusText("Running");
       }
@@ -441,15 +576,15 @@ function ThreadComposer({
         onDone();
       }
     });
-  }, [onDone]);
+  }, [onDone, onEvent]);
 
   const start = async () => {
     const text = prompt.trim();
     if (!text || runId || starting) return;
     const targetSessionId = selected?.id || undefined;
-    setEvents([]);
     setStarting(true);
     setStatusText(targetSessionId ? "Starting current session" : "Starting new session");
+    onStart(text);
     try {
       const result = await window.codexDesk.runCodex({
         prompt: text,
@@ -463,13 +598,11 @@ function ThreadComposer({
     } catch (error) {
       setStarting(false);
       setStatusText("Failed");
-      setEvents([
-        {
-          runId: "local",
-          kind: "error",
-          text: error instanceof Error ? error.message : String(error)
-        }
-      ]);
+      onEvent({
+        runId: "local",
+        kind: "error",
+        text: error instanceof Error ? error.message : String(error)
+      });
     }
   };
 
@@ -485,14 +618,6 @@ function ThreadComposer({
 
   return (
     <section className="thread-composer" aria-label="Codex composer">
-      {events.length ? (
-        <section className="run-output compact">
-          {events.map((event, index) => (
-            <RunEventLine key={`${event.runId}-${index}`} event={event} />
-          ))}
-        </section>
-      ) : null}
-
       <div className="composer-shell">
         <textarea
           className="prompt-box"
@@ -504,7 +629,7 @@ function ThreadComposer({
               void start();
             }
           }}
-          placeholder="Ask Codex anything"
+          placeholder={selected ? "继续当前 session" : "新建 session"}
         />
 
         <div className="composer-toolbar">
@@ -543,8 +668,9 @@ function ThreadComposer({
               placeholder={selected?.model || "model"}
               title="model"
             />
-            <button className="icon-button run" type="button" title="发送" onClick={start} disabled={!canSend}>
+            <button className="send-button run" type="button" title="发送" onClick={start} disabled={!canSend}>
               <Play size={18} />
+              发送
             </button>
             <button className="icon-button stop" type="button" title="停止" onClick={cancel} disabled={!runId}>
               <Square size={16} />
@@ -583,7 +709,6 @@ function RunEventLine({ event }: { event: CodexRunEvent }) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("thread");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selected, setSelected] = useState<SessionSummary | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
@@ -669,14 +794,8 @@ export default function App() {
           </div>
         </div>
         <div className="tabs">
-          <button className={tab === "thread" ? "active" : ""} type="button" onClick={() => setTab("thread")}>
-            <MessageSquare size={16} />
-            会话
-          </button>
-          <button className={tab === "usage" ? "active" : ""} type="button" onClick={() => setTab("usage")}>
-            <BarChart3 size={16} />
-            用量
-          </button>
+          <MessageSquare size={16} />
+          会话
         </div>
         <button
           className="link-button"
@@ -700,23 +819,18 @@ export default function App() {
           onRefresh={refreshSessions}
           onSelect={(session) => {
             setSelected(session);
-            setTab("thread");
           }}
         />
 
-        {tab === "thread" ? (
-          <SessionPane
-            session={detail}
-            selected={selected}
-            loading={loadingSession}
-            onExport={exportCurrent}
-            onShowFile={showFile}
-            onRunDone={handleRunDone}
-          />
-        ) : null}
-        {tab === "usage" ? (
-          <UsagePane usage={usage} loading={loadingUsage} onRefresh={refreshUsage} />
-        ) : null}
+        <SessionPane
+          session={detail}
+          selected={selected}
+          loading={loadingSession}
+          onExport={exportCurrent}
+          onShowFile={showFile}
+          onRunDone={handleRunDone}
+        />
+        <UsageMiniPanel usage={usage} loading={loadingUsage} onRefresh={refreshUsage} />
       </div>
 
       {toast ? <div className="toast">{toast}</div> : null}
