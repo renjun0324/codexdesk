@@ -762,7 +762,6 @@ h2 {
   background: #eef1eb;
 }
 
-.menu-pill,
 .target-pill,
 .composer-status {
   display: inline-flex;
@@ -796,23 +795,69 @@ h2 {
   text-overflow: ellipsis;
 }
 
-.mini-input {
-  height: 32px;
+.settings-button,
+.open-dir-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 12px;
+  color: #33403a;
+  background: #f3f5f0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.settings-button.active,
+.settings-button:hover,
+.open-dir-button:hover {
+  background: #fff;
+}
+
+.composer-settings {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.setting-field {
+  display: grid;
+  gap: 5px;
   min-width: 0;
-  padding: 0 9px;
+}
+
+.setting-field span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.setting-field input,
+.setting-field select {
+  width: 100%;
+  height: 38px;
+  min-width: 0;
+  padding: 0 10px;
   color: var(--ink);
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 8px;
   outline: 0;
 }
 
-.cwd-field {
-  width: min(28vw, 240px);
-}
-
-.model-field {
-  width: 116px;
+.setting-field input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 
 .run-output {
@@ -905,9 +950,8 @@ h2 {
     flex-wrap: wrap;
   }
 
-  .cwd-field,
-  .model-field {
-    flex: 1 1 150px;
-    width: auto;
+  .composer-settings {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
   }
 }

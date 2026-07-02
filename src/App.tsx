@@ -6,8 +6,8 @@ import {
   Play,
   RefreshCcw,
   Search,
+  Settings2,
   Square,
-  Terminal
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -549,6 +549,7 @@ function ThreadComposer({
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [statusText, setStatusText] = useState("Ready");
 
   useEffect(() => {
@@ -613,6 +614,7 @@ function ThreadComposer({
   };
   const composerCwd = cwd || selected?.cwd || "";
   const canSend = Boolean(prompt.trim()) && !runId && !starting;
+  const currentPlace = selected ? "当前会话" : "新会话";
 
   return (
     <section className="thread-composer" aria-label="Codex composer">
@@ -640,40 +642,22 @@ function ThreadComposer({
 
         <div className="composer-toolbar">
           <div className="composer-left">
-            <button
-              className="icon-button ghost"
-              type="button"
-              title="打开工作目录"
-              onClick={() => composerCwd && window.codexDesk.openPath(composerCwd)}
-              disabled={!composerCwd}
-            >
-              <FolderOpen size={16} />
-            </button>
-            <span className="menu-pill">
-              <Terminal size={15} />
-              Codex exec
-            </span>
             <span className="target-pill" title={selected?.id || "new session"}>
-              {selected ? "当前会话" : "新会话"}
+              {currentPlace}
             </span>
             <span className="composer-status">{statusText}</span>
           </div>
 
           <div className="composer-right">
-            <input
-              className="mini-input cwd-field"
-              value={cwd}
-              onChange={(event) => setCwd(event.target.value)}
-              placeholder={selected?.cwd || "cwd"}
-              title="cwd"
-            />
-            <input
-              className="mini-input model-field"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              placeholder={selected?.model || "model"}
-              title="model"
-            />
+            <button
+              className={`settings-button ${showSettings ? "active" : ""}`}
+              type="button"
+              title="运行设置"
+              onClick={() => setShowSettings((value) => !value)}
+            >
+              <Settings2 size={16} />
+              运行设置
+            </button>
             <button className="send-button run" type="button" title="发送" onClick={start} disabled={!canSend}>
               <Play size={18} />
               发送
@@ -683,6 +667,38 @@ function ThreadComposer({
             </button>
           </div>
         </div>
+
+        {showSettings ? (
+          <section className="composer-settings">
+            <label className="setting-field">
+              <span>模型</span>
+              <select value={model} onChange={(event) => setModel(event.target.value)}>
+                <option value="">默认模型</option>
+                <option value="gpt-5-codex">gpt-5-codex</option>
+                <option value="gpt-5">gpt-5</option>
+              </select>
+            </label>
+            <label className="setting-field wide">
+              <span>工作目录</span>
+              <input
+                value={cwd}
+                onChange={(event) => setCwd(event.target.value)}
+                placeholder={selected?.cwd || "工作目录"}
+                title="工作目录"
+              />
+            </label>
+            <button
+              className="open-dir-button"
+              type="button"
+              title="打开工作目录"
+              onClick={() => composerCwd && window.codexDesk.openPath(composerCwd)}
+              disabled={!composerCwd}
+            >
+              <FolderOpen size={16} />
+              打开目录
+            </button>
+          </section>
+        ) : null}
       </div>
     </section>
   );
@@ -810,7 +826,7 @@ export default function App() {
           disabled={!selected?.cwd}
         >
           <ExternalLink size={16} />
-          CWD
+          工作目录
         </button>
       </nav>
 
