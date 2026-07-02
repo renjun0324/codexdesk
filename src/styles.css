@@ -160,6 +160,13 @@ button:disabled {
   margin: 0;
 }
 
+.usage-mini-top span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .usage-mini-metrics {
   display: grid;
   gap: 10px;

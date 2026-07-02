@@ -562,24 +562,30 @@ function UsageMiniPanel({
   onRefresh: () => void;
 }) {
   const primary = usage?.latest?.rateLimits?.primary || null;
-  const total = usage ? usage.summary.totalTokens : 0;
-  const max = usage ? usage.summary.maxTokens : 0;
+  const secondary = usage?.latest?.rateLimits?.secondary || null;
+  const usedPercent = Math.max(0, Math.min(100, primary?.usedPercent || 0));
+  const remainingPercent = Math.max(0, 100 - usedPercent);
   const reset = primary?.resetsAt ? formatFullDate(primary.resetsAt * 1000) : "-";
+  const observedAt = usage?.latest?.observedAt || usage?.account.observedAt || usage?.summary.lastUpdated || null;
+  const sourceLabel = usage?.account.available ? "Codex 实时限额" : "本地记录估算";
 
   return (
     <aside className="usage-mini" aria-label="usage">
       <div className="usage-mini-top">
-        <h2>用量</h2>
+        <div>
+          <h2>限额</h2>
+          <span>{sourceLabel}</span>
+        </div>
         <button className="icon-button" type="button" title="刷新" onClick={onRefresh}>
           <RefreshCcw size={16} className={loading ? "spin" : ""} />
         </button>
       </div>
 
       <section className="usage-mini-metrics">
-        <Metric label="total" value={formatShort(total)} />
-        <Metric label="max" value={formatShort(max)} />
+        <Metric label="当前窗口已用" value={`${usedPercent.toFixed(1)}%`} />
+        <Metric label="剩余估算" value={`${remainingPercent.toFixed(1)}%`} />
         <div className="metric usage-reset">
-          <span>reset</span>
+          <span>重置时间</span>
           <strong>{reset}</strong>
         </div>
       </section>
@@ -588,22 +594,23 @@ function UsageMiniPanel({
         <div className="usage-mini-usage">
           <div className="rate-row">
             <div className="rate-meta">
-              <span>primary used</span>
-              <strong>{Math.max(0, Math.min(100, primary.usedPercent || 0)).toFixed(1)}%</strong>
+              <span>短窗口</span>
+              <strong>{usedPercent.toFixed(1)}%</strong>
             </div>
             <div className="meter" aria-label="primary rate limit used">
-              <div style={{ width: `${Math.max(0, Math.min(100, primary.usedPercent || 0))}%` }} />
+              <div style={{ width: `${usedPercent}%` }} />
             </div>
             <div className="muted micro">
-              {primary.windowMinutes ? `${primary.windowMinutes} min` : "window -"}
+              {primary.windowMinutes ? `${primary.windowMinutes} 分钟窗口` : "窗口 -"}
             </div>
           </div>
+          {secondary ? <RateBar label="长窗口" value={secondary} /> : null}
         </div>
       ) : null}
 
       <div className="muted usage-mini-meta">
         <span className="status-dot live" />
-        <span>最近刷新：{formatFullDate(usage?.summary.lastUpdated)}</span>
+        <span>最近刷新：{formatFullDate(observedAt)}</span>
       </div>
     </aside>
   );
