@@ -60,6 +60,13 @@ function basename(filePath: string) {
   return filePath.split("/").filter(Boolean).pop() || filePath;
 }
 
+function formatModelName(model?: string | null) {
+  if (!model) return "";
+  if (model === "gpt-5-codex") return "GPT-5 / Codex";
+  if (model === "gpt-5") return "GPT-5";
+  return model;
+}
+
 function RateBar({ label, value }: { label: string; value: RateLimitWindow | null }) {
   const percent = Math.max(0, Math.min(100, value?.usedPercent || 0));
   return (
@@ -701,10 +708,14 @@ function ThreadComposer({
   const canSend = Boolean(prompt.trim()) && !runId && !starting;
   const currentPlace = selected ? "当前会话" : "新会话";
   const inheritedModelLabel = selected?.model
-    ? `跟随当前会话（${selected.model}）`
+    ? `跟随当前会话（${formatModelName(selected.model)}）`
     : "跟随 Codex 默认模型";
-  const modelOptions = ["gpt-5-codex", "gpt-5"];
-  const customSessionModel = selected?.model && !modelOptions.includes(selected.model) ? selected.model : null;
+  const modelOptions = [
+    { value: "gpt-5-codex", label: "GPT-5 / Codex" },
+    { value: "gpt-5", label: "GPT-5" }
+  ];
+  const knownModelValues = modelOptions.map((option) => option.value);
+  const customSessionModel = selected?.model && !knownModelValues.includes(selected.model) ? selected.model : null;
 
   return (
     <section className="thread-composer" aria-label="Codex composer">
@@ -764,10 +775,12 @@ function ThreadComposer({
               <span>模型</span>
               <select value={model} onChange={(event) => setModel(event.target.value)}>
                 <option value="">{inheritedModelLabel}</option>
-                {customSessionModel ? <option value={customSessionModel}>{customSessionModel}</option> : null}
+                {customSessionModel ? (
+                  <option value={customSessionModel}>{formatModelName(customSessionModel)}</option>
+                ) : null}
                 {modelOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
+                  <option key={option.value} value={option.value}>
+                    {option.label}
                   </option>
                 ))}
               </select>
