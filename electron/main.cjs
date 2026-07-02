@@ -15,6 +15,25 @@ const runningCodex = new Map();
 function configureLinuxInputMethod() {
   if (process.platform !== "linux") return;
 
+  const hasProcess = (names) => {
+    try {
+      return fsSync.readdirSync("/proc").some((entry) => {
+        if (!/^\d+$/.test(entry)) return false;
+        const commPath = path.join("/proc", entry, "comm");
+        const cmdlinePath = path.join("/proc", entry, "cmdline");
+        const comm = fsSync.existsSync(commPath)
+          ? fsSync.readFileSync(commPath, "utf8").trim()
+          : "";
+        const cmdline = fsSync.existsSync(cmdlinePath)
+          ? fsSync.readFileSync(cmdlinePath, "utf8").replace(/\0/g, " ")
+          : "";
+        return names.some((name) => comm === name || cmdline.includes(name));
+      });
+    } catch {
+      return false;
+    }
+  };
+
   const xModifierMatch = String(process.env.XMODIFIERS || "").match(/@im=([^;]+)/i);
   const configured = [
     process.env.GTK_IM_MODULE,
@@ -24,20 +43,24 @@ function configureLinuxInputMethod() {
     .filter(Boolean)
     .map((value) => String(value).toLowerCase());
 
+  const running = hasProcess(["fcitx5", "fcitx"]) ? "fcitx" : hasProcess(["ibus-daemon"]) ? "ibus" : null;
   const fallback = fsSync.existsSync(path.join(os.homedir(), ".config", "fcitx5")) ||
     fsSync.existsSync(path.join(os.homedir(), ".config", "fcitx"))
     ? "fcitx"
     : fsSync.existsSync(path.join(os.homedir(), ".config", "ibus"))
       ? "ibus"
       : null;
-  const inputMethod = configured.find((value) => value === "fcitx" || value === "ibus") || fallback;
+  const inputMethod = running || configured.find((value) => value === "fcitx" || value === "ibus") || fallback;
 
   if (inputMethod) {
-    process.env.GTK_IM_MODULE ||= inputMethod;
-    process.env.QT_IM_MODULE ||= inputMethod;
-    process.env.XMODIFIERS ||= `@im=${inputMethod}`;
+    process.env.GTK_IM_MODULE = inputMethod;
+    process.env.QT_IM_MODULE = inputMethod;
+    process.env.XMODIFIERS = `@im=${inputMethod}`;
+    process.env.SDL_IM_MODULE = inputMethod;
+    process.env.CLUTTER_IM_MODULE = inputMethod;
   }
 
+  app.commandLine.appendSwitch("gtk-version", "3");
   app.commandLine.appendSwitch("enable-wayland-ime");
 }
 
