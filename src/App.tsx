@@ -102,6 +102,7 @@ function Metric({ label, value }: { label: string; value: number | string }) {
 }
 
 function MarkdownBlock({ text }: { text: string }) {
+  const safeText = typeof text === "string" ? text : JSON.stringify(text, null, 2);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
@@ -121,7 +122,7 @@ function MarkdownBlock({ text }: { text: string }) {
         }
       }}
     >
-      {text}
+      {safeText}
     </ReactMarkdown>
   );
 }
@@ -305,6 +306,8 @@ function UsagePane({
   onRefresh: () => void;
 }) {
   const maxDaily = Math.max(...(usage?.daily.map((item) => item.tokens) || [1]), 1);
+  const accountSummary = usage?.account.usage?.summary || null;
+  const isLive = Boolean(usage?.account.available);
 
   return (
     <main className="content-pane usage-pane">
@@ -320,9 +323,19 @@ function UsagePane({
       </section>
 
       <section className="session-stats">
-        <Metric label="sessions" value={usage?.summary.sessions || 0} />
-        <Metric label="tokens" value={usage?.summary.totalTokens || 0} />
-        <Metric label="peak" value={usage?.summary.maxTokens || 0} />
+        <Metric label="account" value={usage?.summary.totalTokens || 0} />
+        <Metric label="peak day" value={usage?.summary.maxTokens || 0} />
+        <Metric label="local sessions" value={usage?.localSummary.sessions || 0} />
+        <Metric label="local sum" value={usage?.localSummary.totalTokens || 0} />
+      </section>
+
+      <section className="usage-source">
+        <span className={isLive ? "status-dot live" : "status-dot"} />
+        <span>
+          {isLive
+            ? `live account data from ${usage?.account.codexBinary || "codex app-server"}`
+            : `fallback from local session logs${usage?.account.error ? `: ${usage.account.error}` : ""}`}
+        </span>
         <Metric label="updated" value={formatDate(usage?.summary.lastUpdated)} />
       </section>
 
@@ -336,8 +349,25 @@ function UsagePane({
       </section>
 
       <section className="usage-block">
-        <h2>Latest Token Count</h2>
-        <TokenGrid usage={usage?.latest?.usage?.total || null} />
+        <h2>{accountSummary ? "Account Summary" : "Latest Token Count"}</h2>
+        {accountSummary ? (
+          <div className="token-grid">
+            <Metric label="lifetime" value={accountSummary.lifetimeTokens || 0} />
+            <Metric label="peak day" value={accountSummary.peakDailyTokens || 0} />
+            <Metric label="streak" value={accountSummary.currentStreakDays || 0} />
+            <Metric label="best streak" value={accountSummary.longestStreakDays || 0} />
+            <Metric
+              label="longest turn"
+              value={
+                accountSummary.longestRunningTurnSec == null
+                  ? "-"
+                  : `${accountSummary.longestRunningTurnSec}s`
+              }
+            />
+          </div>
+        ) : (
+          <TokenGrid usage={usage?.latest?.usage?.total || null} />
+        )}
       </section>
 
       <section className="usage-block">
@@ -622,4 +652,3 @@ export default function App() {
     </div>
   );
 }
-

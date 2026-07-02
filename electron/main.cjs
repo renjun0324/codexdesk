@@ -12,6 +12,37 @@ const sessionsDir = path.join(codexHome, "sessions");
 const stateDb = path.join(codexHome, "state_5.sqlite");
 const runningCodex = new Map();
 
+function expandHome(candidate) {
+  if (!candidate) return candidate;
+  if (candidate === "~") return os.homedir();
+  if (candidate.startsWith("~/")) return path.join(os.homedir(), candidate.slice(2));
+  return candidate;
+}
+
+function resolveCodexBinary() {
+  const pathCandidates = (process.env.PATH || "")
+    .split(path.delimiter)
+    .filter(Boolean)
+    .map((dir) => path.join(expandHome(dir), "codex"));
+
+  const candidates = [
+    process.env.CODEX_BIN,
+    ...pathCandidates,
+    path.join(os.homedir(), "wechat-web-devtools-linux/cache/npm/node_global/bin/codex"),
+    path.join(os.homedir(), ".npm-global/bin/codex"),
+    path.join(os.homedir(), ".local/bin/codex"),
+    "/usr/local/bin/codex",
+    "/usr/bin/codex"
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (fsSync.existsSync(candidate)) return candidate;
+  }
+  return "codex";
+}
+
+const codexBinary = resolveCodexBinary();
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1360,
@@ -34,6 +65,13 @@ function createWindow() {
   } else {
     win.loadFile(path.join(rootDir, "dist", "index.html"));
   }
+
+  win.webContents.on("did-fail-load", (_event, code, description, validatedUrl) => {
+    console.error(`[renderer:load-failed] ${code} ${description} ${validatedUrl}`);
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    console.error(`[renderer:gone] ${JSON.stringify(details)}`);
+  });
 }
 
 app.whenReady().then(() => {
@@ -112,8 +150,19 @@ function toMs(value) {
 }
 
 function truncateText(text, limit = 12000) {
-  if (!text || text.length <= limit) return text || "";
-  return `${text.slice(0, limit)}\n\n[truncated ${text.length - limit} chars]`;
+  let value = text;
+  if (typeof value !== "string") {
+    value = extractText(value);
+    if (!value) {
+      try {
+        value = JSON.stringify(text, null, 2);
+      } catch {
+        value = String(text || "");
+      }
+    }
+  }
+  if (!value || value.length <= limit) return value || "";
+  return `${value.slice(0, limit)}\n\n[truncated ${value.length - limit} chars]`;
 }
 
 function extractText(content) {
@@ -133,6 +182,7 @@ function extractText(content) {
       .filter(Boolean)
       .join("\n\n");
   }
+  if (content.type === "image" || content.type === "input_image") return "[image]";
   if (typeof content.text === "string") return content.text;
   if (Array.isArray(content.content)) return extractText(content.content);
   return "";
@@ -172,6 +222,155 @@ function normalizeRateLimit(rateLimits) {
     rateLimitReachedType:
       rateLimits.rate_limit_reached_type ?? rateLimits.rateLimitReachedType ?? null
   };
+}
+
+function normalizeAccountUsageResponse(response) {
+  if (!response) return null;
+  const summary = response.summary || {};
+  return {
+    summary: {
+      lifetimeTokens:
+        summary.lifetimeTokens == null ? null : Number(summary.lifetimeTokens),
+      peakDailyTokens:
+        summary.peakDailyTokens == null ? null : Number(summary.peakDailyTokens),
+      longestRunningTurnSec:
+        summary.longestRunningTurnSec == null
+          ? null
+          : Number(summary.longestRunningTurnSec),
+      currentStreakDays:
+        summary.currentStreakDays == null ? null : Number(summary.currentStreakDays),
+      longestStreakDays:
+        summary.longestStreakDays == null ? null : Number(summary.longestStreakDays)
+    },
+    dailyUsageBuckets: Array.isArray(response.dailyUsageBuckets)
+      ? response.dailyUsageBuckets.map((bucket) => ({
+          startDate: bucket.startDate,
+          tokens: Number(bucket.tokens || 0)
+        }))
+      : null
+  };
+}
+
+function normalizeRateLimitsResponse(response) {
+  if (!response) return null;
+  const rateLimitsByLimitId = response.rateLimitsByLimitId || null;
+  const normalizedByLimitId = rateLimitsByLimitId
+    ? Object.fromEntries(
+        Object.entries(rateLimitsByLimitId).map(([key, value]) => [
+          key,
+          normalizeRateLimit(value)
+        ])
+      )
+    : null;
+
+  return {
+    rateLimits: normalizeRateLimit(response.rateLimits),
+    rateLimitsByLimitId: normalizedByLimitId,
+    rateLimitResetCredits: response.rateLimitResetCredits || null
+  };
+}
+
+function queryAppServerUsage() {
+  return new Promise((resolve) => {
+    const child = spawn(codexBinary, ["app-server", "--stdio"], {
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    const state = {
+      initialized: false,
+      rateLimits: null,
+      usage: null,
+      stderr: "",
+      buffer: ""
+    };
+
+    let finished = false;
+    const timeout = setTimeout(() => finish(), 12000);
+
+    const send = (message) => {
+      child.stdin.write(`${JSON.stringify(message)}\n`);
+    };
+
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      if (!child.killed) child.kill("SIGTERM");
+      resolve({
+        available: Boolean(state.rateLimits || state.usage),
+        observedAt: Date.now(),
+        rateLimits: state.rateLimits,
+        usage: state.usage,
+        codexBinary,
+        error: state.rateLimits || state.usage ? null : state.stderr.trim() || null
+      });
+    };
+
+    const maybeFinish = () => {
+      if (state.rateLimits && state.usage) finish();
+    };
+
+    const handleMessage = (message) => {
+      if (message.id === 1 && !state.initialized) {
+        state.initialized = true;
+        send({ method: "initialized" });
+        send({ method: "account/rateLimits/read", id: 2 });
+        send({ method: "account/usage/read", id: 3 });
+        return;
+      }
+      if (message.id === 2) {
+        state.rateLimits = normalizeRateLimitsResponse(message.result);
+        maybeFinish();
+        return;
+      }
+      if (message.id === 3) {
+        state.usage = normalizeAccountUsageResponse(message.result);
+        maybeFinish();
+      }
+    };
+
+    child.on("error", (error) => {
+      state.stderr += error.message;
+      finish();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      state.stderr += chunk.toString("utf8");
+    });
+
+    child.stdout.on("data", (chunk) => {
+      state.buffer += chunk.toString("utf8");
+      const lines = state.buffer.split(/\r?\n/);
+      state.buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const message = parseJsonLine(line);
+        if (message) handleMessage(message);
+      }
+    });
+
+    child.on("close", () => {
+      if (state.buffer.trim()) {
+        const message = parseJsonLine(state.buffer.trim());
+        if (message) handleMessage(message);
+      }
+      finish();
+    });
+
+    send({
+      method: "initialize",
+      id: 1,
+      params: {
+        clientInfo: { name: "codexsmax", version: "0.1.0" },
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false,
+          optOutNotificationMethods: []
+        }
+      }
+    });
+  });
 }
 
 function parseCodexRecord(record, lineNumber) {
@@ -438,6 +637,7 @@ async function findLatestRateLimit() {
 }
 
 async function getUsage() {
+  const account = await queryAppServerUsage();
   const [summary] = await querySqlite(
     stateDb,
     `select count(*) as sessions,
@@ -470,25 +670,60 @@ async function getUsage() {
       limit 8`
   );
 
+  const accountDaily = account.usage?.dailyUsageBuckets
+    ? account.usage.dailyUsageBuckets.slice(-21).map((bucket) => ({
+        date: bucket.startDate,
+        sessions: 0,
+        tokens: Number(bucket.tokens || 0)
+      }))
+    : null;
+
+  const liveRateLimits =
+    account.rateLimits?.rateLimitsByLimitId?.codex ||
+    account.rateLimits?.rateLimits ||
+    null;
+
   return {
     codexHome,
     summary: {
+      sessions: Number(summary?.sessions || 0),
+      totalTokens:
+        account.usage?.summary?.lifetimeTokens == null
+          ? Number(summary?.totalTokens || 0)
+          : Number(account.usage.summary.lifetimeTokens),
+      maxTokens:
+        account.usage?.summary?.peakDailyTokens == null
+          ? Number(summary?.maxTokens || 0)
+          : Number(account.usage.summary.peakDailyTokens),
+      lastUpdated: Number(summary?.lastUpdated || 0)
+    },
+    localSummary: {
       sessions: Number(summary?.sessions || 0),
       totalTokens: Number(summary?.totalTokens || 0),
       maxTokens: Number(summary?.maxTokens || 0),
       lastUpdated: Number(summary?.lastUpdated || 0)
     },
-    daily: daily.reverse().map((row) => ({
-      date: row.date,
-      sessions: Number(row.sessions || 0),
-      tokens: Number(row.tokens || 0)
-    })),
+    daily:
+      accountDaily ||
+      daily.reverse().map((row) => ({
+        date: row.date,
+        sessions: Number(row.sessions || 0),
+        tokens: Number(row.tokens || 0)
+      })),
     byWorkspace: byWorkspace.map((row) => ({
       cwd: row.cwd || "",
       sessions: Number(row.sessions || 0),
       tokens: Number(row.tokens || 0)
     })),
-    latest: await findLatestRateLimit()
+    latest: account.available
+      ? {
+          observedAt: account.observedAt,
+          usage: null,
+          rateLimits: liveRateLimits,
+          filePath: "codex app-server"
+        }
+      : await findLatestRateLimit(),
+    account
   };
 }
 
@@ -574,7 +809,7 @@ ipcMain.handle("codex:run", (event, options) => {
   if (sessionId) args.push(sessionId, prompt);
   else args.push(prompt);
 
-  const child = spawn("codex", args, {
+  const child = spawn(codexBinary, args, {
     cwd,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"]
@@ -587,7 +822,7 @@ ipcMain.handle("codex:run", (event, options) => {
     }
   };
 
-  send({ kind: "started", args: ["codex", ...args] });
+  send({ kind: "started", args: [codexBinary, ...args] });
 
   let stdoutBuffer = "";
   child.stdout.on("data", (chunk) => {
@@ -639,4 +874,3 @@ ipcMain.handle("codex:cancel", (_event, runId) => {
   runningCodex.delete(runId);
   return true;
 });
-

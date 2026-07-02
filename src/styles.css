@@ -561,6 +561,35 @@ h2 {
   max-width: 1180px;
 }
 
+.usage-source {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 160px;
+  align-items: center;
+  gap: 10px;
+  margin: -6px 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.usage-source .metric {
+  padding: 8px 10px;
+}
+
+.usage-source .metric strong {
+  font-size: 14px;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  background: var(--accent-2);
+  border-radius: 50%;
+}
+
+.status-dot.live {
+  background: var(--accent);
+}
+
 .token-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -717,4 +746,3 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
-

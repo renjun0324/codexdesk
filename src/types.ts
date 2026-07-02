@@ -85,6 +85,12 @@ export type UsageSnapshot = {
     maxTokens: number;
     lastUpdated: number;
   };
+  localSummary: {
+    sessions: number;
+    totalTokens: number;
+    maxTokens: number;
+    lastUpdated: number;
+  };
   daily: Array<{ date: string; sessions: number; tokens: number }>;
   byWorkspace: Array<{ cwd: string; sessions: number; tokens: number }>;
   latest: {
@@ -97,6 +103,27 @@ export type UsageSnapshot = {
     rateLimits: RateLimitSnapshot | null;
     filePath: string;
   } | null;
+  account: {
+    available: boolean;
+    observedAt: number;
+    codexBinary: string;
+    error: string | null;
+    usage: {
+      summary: {
+        lifetimeTokens: number | null;
+        peakDailyTokens: number | null;
+        longestRunningTurnSec: number | null;
+        currentStreakDays: number | null;
+        longestStreakDays: number | null;
+      };
+      dailyUsageBuckets: Array<{ startDate: string; tokens: number }> | null;
+    } | null;
+    rateLimits: {
+      rateLimits: RateLimitSnapshot | null;
+      rateLimitsByLimitId: Record<string, RateLimitSnapshot | null> | null;
+      rateLimitResetCredits: unknown | null;
+    } | null;
+  };
 };
 
 export type LatestUsage = NonNullable<UsageSnapshot["latest"]>["usage"];
