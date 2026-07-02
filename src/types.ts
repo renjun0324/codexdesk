@@ -147,6 +147,7 @@ export type CodexRunEvent =
 export type CodexDeskApi = {
   listSessions: () => Promise<SessionSummary[]>;
   readSession: (filePath: string) => Promise<SessionDetail>;
+  renameSession: (id: string, title: string) => Promise<{ id: string; title: string }>;
   exportSession: (filePath: string) => Promise<{ canceled: boolean; filePath?: string }>;
   getUsage: () => Promise<UsageSnapshot>;
   runCodex: (options: {

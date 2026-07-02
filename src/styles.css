@@ -301,23 +301,80 @@ button:disabled {
 }
 
 .session-item {
+  position: relative;
   display: grid;
-  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 6px;
+  align-items: start;
   width: 100%;
   min-height: 94px;
   padding: 10px;
   color: #e9efe9;
-  text-align: left;
   background: rgb(255 255 255 / 7%);
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 8px;
-  cursor: pointer;
 }
 
 .session-item.active {
   color: #17201c;
   background: #f7faf6;
   border-color: #f7faf6;
+}
+
+.session-main {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  color: currentColor;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.rename-button,
+.rename-action {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: currentColor;
+  background: rgb(255 255 255 / 9%);
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 7px;
+  cursor: pointer;
+  opacity: 0.72;
+}
+
+.session-item.active .rename-button,
+.session-item.active .rename-action {
+  background: rgb(23 32 28 / 6%);
+  border-color: rgb(23 32 28 / 10%);
+}
+
+.rename-button:hover,
+.rename-action:hover {
+  opacity: 1;
+}
+
+.rename-editor {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+  gap: 7px;
+  align-items: center;
+}
+
+.rename-editor input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid rgb(255 255 255 / 34%);
+  border-radius: 7px;
+  outline: 0;
 }
 
 .session-title {

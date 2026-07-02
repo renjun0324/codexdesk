@@ -166,6 +166,26 @@ function querySqlite(dbPath, sql) {
   });
 }
 
+function execSqlite(dbPath, sql) {
+  return new Promise((resolve, reject) => {
+    if (!fsSync.existsSync(dbPath)) {
+      reject(new Error("Codex state database was not found."));
+      return;
+    }
+    execFile("sqlite3", [dbPath, sql], { maxBuffer: 1024 * 1024 }, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(true);
+    });
+  });
+}
+
+function sqlString(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
 async function walkFiles(dir, predicate, found = []) {
   let entries = [];
   try {
@@ -848,6 +868,18 @@ ipcMain.handle("sessions:list", () => listSessions());
 
 ipcMain.handle("sessions:read", async (_event, filePath) => {
   return parseSessionFile(filePath);
+});
+
+ipcMain.handle("sessions:rename", async (_event, id, title) => {
+  const sessionId = String(id || "").trim();
+  const nextTitle = String(title || "").trim().slice(0, 180);
+  if (!sessionId) throw new Error("Session id is empty.");
+  if (!nextTitle) throw new Error("Title is empty.");
+  await execSqlite(
+    stateDb,
+    `update threads set title = ${sqlString(nextTitle)} where id = ${sqlString(sessionId)}`
+  );
+  return { id: sessionId, title: nextTitle };
 });
 
 ipcMain.handle("sessions:export", async (_event, filePath) => {

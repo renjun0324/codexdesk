@@ -1,5 +1,7 @@
 import {
+  Check,
   Download,
+  Edit3,
   ExternalLink,
   FolderOpen,
   MessageSquare,
@@ -8,6 +10,7 @@ import {
   Search,
   Settings2,
   Square,
+  X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -156,6 +159,7 @@ function SessionList({
   onQuery,
   onToggleArchived,
   onSelect,
+  onRename,
   onRefresh
 }: {
   sessions: SessionSummary[];
@@ -165,8 +169,13 @@ function SessionList({
   onQuery: (value: string) => void;
   onToggleArchived: (value: boolean) => void;
   onSelect: (session: SessionSummary) => void;
+  onRename: (session: SessionSummary, title: string) => Promise<void>;
   onRefresh: () => void;
 }) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return sessions.filter((session) => {
@@ -177,6 +186,28 @@ function SessionList({
         .includes(needle);
     });
   }, [query, sessions, showArchived]);
+
+  const beginRename = (session: SessionSummary) => {
+    setEditingId(session.id);
+    setDraftTitle(session.title);
+  };
+
+  const cancelRename = () => {
+    setEditingId(null);
+    setDraftTitle("");
+  };
+
+  const saveRename = async (session: SessionSummary) => {
+    const title = draftTitle.trim();
+    if (!title || savingId) return;
+    setSavingId(session.id);
+    try {
+      await onRename(session, title);
+      cancelRename();
+    } finally {
+      setSavingId(null);
+    }
+  };
 
   return (
     <aside className="session-rail">
@@ -195,25 +226,63 @@ function SessionList({
           checked={showArchived}
           onChange={(event) => onToggleArchived(event.target.checked)}
         />
-        <span>Archived</span>
+        <span>显示归档</span>
       </label>
       <div className="session-count">{filtered.length} / {sessions.length}</div>
       <div className="session-list">
-        {filtered.map((session) => (
-          <button
-            className={`session-item ${selected === session.id ? "active" : ""}`}
-            key={session.id}
-            type="button"
-            onClick={() => onSelect(session)}
-          >
-            <span className="session-title">{session.title}</span>
-            <span className="session-preview">{session.preview || session.cwd}</span>
-            <span className="session-meta">
-              <span>{formatDate(session.updatedAt)}</span>
-              <span>{formatShort(session.tokensUsed)}</span>
-            </span>
-          </button>
-        ))}
+        {filtered.map((session) => {
+          const editing = editingId === session.id;
+          return (
+            <article className={`session-item ${selected === session.id ? "active" : ""}`} key={session.id}>
+              {editing ? (
+                <div className="rename-editor">
+                  <input
+                    autoFocus
+                    value={draftTitle}
+                    onChange={(event) => setDraftTitle(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void saveRename(session);
+                      if (event.key === "Escape") cancelRename();
+                    }}
+                  />
+                  <button
+                    className="rename-action"
+                    type="button"
+                    title="保存"
+                    onClick={() => void saveRename(session)}
+                    disabled={savingId === session.id || !draftTitle.trim()}
+                  >
+                    <Check size={15} />
+                  </button>
+                  <button className="rename-action" type="button" title="取消" onClick={cancelRename}>
+                    <X size={15} />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button className="session-main" type="button" onClick={() => onSelect(session)}>
+                    <span className="session-title" title={session.title}>{session.title}</span>
+                    <span className="session-preview" title={session.preview || session.cwd}>
+                      {session.preview || session.cwd}
+                    </span>
+                    <span className="session-meta">
+                      <span>{formatDate(session.updatedAt)}</span>
+                      <span>{formatShort(session.tokensUsed)}</span>
+                    </span>
+                  </button>
+                  <button
+                    className="rename-button"
+                    type="button"
+                    title="重命名"
+                    onClick={() => beginRename(session)}
+                  >
+                    <Edit3 size={15} />
+                  </button>
+                </>
+              )}
+            </article>
+          );
+        })}
       </div>
     </aside>
   );
@@ -332,7 +401,7 @@ function SessionPane({
         <section className="session-header">
           <div>
             <p className="eyebrow">{session.model || session.source || "codex"}</p>
-            <h1>{session.title}</h1>
+            <h1>{selected?.title || session.title}</h1>
             <div className="path-line">{session.cwd || basename(session.filePath)}</div>
           </div>
           <div className="header-actions">
@@ -803,6 +872,14 @@ export default function App() {
     });
   }, [refreshSessions, refreshUsage]);
 
+  const renameSession = useCallback(async (session: SessionSummary, title: string) => {
+    const result = await window.codexDesk.renameSession(session.id, title);
+    setSessions((current) =>
+      current.map((item) => (item.id === result.id ? { ...item, title: result.title } : item))
+    );
+    setSelected((current) => (current?.id === result.id ? { ...current, title: result.title } : current));
+  }, []);
+
   const exportCurrent = async () => {
     if (!selected) return;
     const result = await window.codexDesk.exportSession(selected.filePath);
@@ -850,6 +927,7 @@ export default function App() {
           onQuery={setQuery}
           onToggleArchived={setShowArchived}
           onRefresh={refreshSessions}
+          onRename={renameSession}
           onSelect={(session) => {
             setSelected(session);
           }}
