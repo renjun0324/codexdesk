@@ -1,3 +1,5 @@
+<p align="right"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
+
 <div align="center">
 
 <img src="assets/codexdesk.svg" width="96" height="96" alt="Codex Desk" />
@@ -18,7 +20,7 @@ quota tracking and a built-in prompt runner — without touching the terminal.
 <div align="center">
   <img src="assets/screenshots/overview.png" width="900" alt="Codex Desk overview" />
   <br/>
-  <sub>Three-pane workspace: session list · rendered conversation · live usage. <i>(conversation blurred for privacy)</i></sub>
+  <sub>Three-pane workspace: session list · rendered conversation · live usage.</sub>
 </div>
 
 ---
