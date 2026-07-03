@@ -27,6 +27,7 @@ export type RateLimitSnapshot = {
 
 export type SessionSummary = {
   id: string;
+  resumeId: string;
   filePath: string;
   title: string;
   preview: string;
@@ -58,6 +59,7 @@ export type SessionEvent = {
 
 export type SessionDetail = {
   id: string;
+  resumeId: string;
   filePath: string;
   title: string;
   preview: string;

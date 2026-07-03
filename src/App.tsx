@@ -1,15 +1,17 @@
 import {
   Check,
+  Copy,
   Download,
   Edit3,
   ExternalLink,
   FolderOpen,
   MessageSquare,
+  Moon,
   Play,
   RefreshCcw,
   Search,
-  Settings2,
   Square,
+  Sun,
   Trash2,
   X
 } from "lucide-react";
@@ -42,9 +44,12 @@ const shortNumber = new Intl.NumberFormat("zh-CN", {
   maximumFractionDigits: 1
 });
 const RAIL_WIDTH_KEY = "codexdesk.sessionRailWidth";
+const THEME_KEY = "codexdesk.theme";
 const DEFAULT_RAIL_WIDTH = 330;
 const MIN_RAIL_WIDTH = 260;
 const MAX_RAIL_WIDTH = 560;
+const codexDeskIcon = new URL("../assets/codexdesk.svg", import.meta.url).href;
+type ThemeMode = "light" | "dark";
 
 function clampRailWidth(value: number) {
   return Math.max(MIN_RAIL_WIDTH, Math.min(MAX_RAIL_WIDTH, value));
@@ -55,6 +60,13 @@ function readStoredRailWidth() {
   const raw = window.localStorage.getItem(RAIL_WIDTH_KEY);
   const parsed = raw ? Number(raw) : DEFAULT_RAIL_WIDTH;
   return Number.isFinite(parsed) ? clampRailWidth(parsed) : DEFAULT_RAIL_WIDTH;
+}
+
+function readStoredTheme(): ThemeMode {
+  if (typeof window === "undefined") return "light";
+  const stored = window.localStorage.getItem(THEME_KEY);
+  if (stored === "light" || stored === "dark") return stored;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function formatNumber(value?: number | null) {
@@ -84,6 +96,28 @@ function basename(filePath: string) {
   return filePath.split("/").filter(Boolean).pop() || filePath;
 }
 
+async function copyText(text: string) {
+  const value = text.trim();
+  if (!value) return;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall back to textarea selection below.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
 function formatModelName(model?: string | null) {
   if (!model) return "";
   if (model === "gpt-5-codex") return "GPT-5 / Codex";
@@ -103,8 +137,8 @@ function RateBar({ label, value }: { label: string; value: RateLimitWindow | nul
         <div style={{ width: `${percent}%` }} />
       </div>
       <div className="muted micro">
-        {value?.windowMinutes ? `${value.windowMinutes} min` : "window -"}
-        {value?.resetsAt ? ` / reset ${formatFullDate(value.resetsAt * 1000)}` : ""}
+        {value?.windowMinutes ? `${value.windowMinutes} 分钟窗口` : "窗口 -"}
+        {value?.resetsAt ? ` / 重置 ${formatFullDate(value.resetsAt * 1000)}` : ""}
       </div>
     </div>
   );
@@ -113,11 +147,11 @@ function RateBar({ label, value }: { label: string; value: RateLimitWindow | nul
 function TokenGrid({ usage }: { usage: TokenBreakdown | null | undefined }) {
   return (
     <div className="token-grid">
-      <Metric label="total" value={usage?.totalTokens || 0} />
-      <Metric label="input" value={usage?.inputTokens || 0} />
-      <Metric label="cached" value={usage?.cachedInputTokens || 0} />
-      <Metric label="output" value={usage?.outputTokens || 0} />
-      <Metric label="reasoning" value={usage?.reasoningOutputTokens || 0} />
+      <Metric label="总计" value={usage?.totalTokens || 0} />
+      <Metric label="输入" value={usage?.inputTokens || 0} />
+      <Metric label="缓存" value={usage?.cachedInputTokens || 0} />
+      <Metric label="输出" value={usage?.outputTokens || 0} />
+      <Metric label="推理" value={usage?.reasoningOutputTokens || 0} />
     </div>
   );
 }
@@ -161,7 +195,7 @@ function MessageBubble({ message }: { message: SessionMessage }) {
   return (
     <article className={`message ${message.role}`}>
       <header>
-        <span>{message.role === "user" ? "User" : "Codex"}</span>
+        <span>{message.role === "user" ? "用户" : "Codex"}</span>
         {message.phase ? <em>{message.phase}</em> : null}
       </header>
       <div className="markdown-body">
@@ -214,7 +248,8 @@ function SessionList({
   onSelect,
   onRename,
   onDelete,
-  onRefresh
+  onRefresh,
+  refreshing
 }: {
   sessions: SessionSummary[];
   selected: string | null;
@@ -226,6 +261,7 @@ function SessionList({
   onRename: (session: SessionSummary, title: string) => Promise<void>;
   onDelete: (session: SessionSummary) => Promise<void>;
   onRefresh: () => void;
+  refreshing: boolean;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
@@ -237,7 +273,7 @@ function SessionList({
     return sessions.filter((session) => {
       if (!showArchived && session.archived) return false;
       if (!needle) return true;
-      return `${session.title} ${session.preview} ${session.cwd} ${session.model}`
+      return `${session.id} ${session.resumeId} ${session.title} ${session.preview} ${session.cwd} ${session.model}`
         .toLowerCase()
         .includes(needle);
     });
@@ -282,8 +318,8 @@ function SessionList({
           <Search size={16} />
           <input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="搜索" />
         </div>
-        <button className="icon-button" type="button" title="刷新" onClick={onRefresh}>
-          <RefreshCcw size={17} />
+        <button className="icon-button" type="button" title={refreshing ? "正在刷新" : "刷新"} onClick={onRefresh}>
+          <RefreshCcw size={17} className={refreshing ? "spin" : ""} />
         </button>
       </div>
       <label className="check-row">
@@ -294,7 +330,7 @@ function SessionList({
         />
         <span>显示归档</span>
       </label>
-      <div className="session-count">{filtered.length} / {sessions.length}</div>
+      <div className="session-count">{refreshing ? "刷新中..." : `${filtered.length} / ${sessions.length}`}</div>
       <div className="session-list">
         {filtered.map((session) => {
           const editing = editingId === session.id;
@@ -326,22 +362,29 @@ function SessionList({
                 </div>
               ) : (
                 <>
-                  <button className="session-main" type="button" onClick={() => onSelect(session)}>
-                    <span className="session-title" title={session.title}>{session.title}</span>
-                    {session.cwd ? (
-                      <span className="session-workdir" title={session.cwd}>
-                        <FolderOpen size={12} />
-                        <span>{basename(session.cwd)}</span>
+                  <div className="session-content">
+                    <button className="session-main" type="button" onClick={() => onSelect(session)}>
+                      <span className="session-title" title={session.title}>{session.title}</span>
+                      {session.cwd ? (
+                        <span className="session-workdir" title={session.cwd}>
+                          <FolderOpen size={12} />
+                          <span>{basename(session.cwd)}</span>
+                        </span>
+                      ) : null}
+                      <span className="session-preview" title={session.preview || session.cwd}>
+                        {session.preview || session.cwd}
                       </span>
-                    ) : null}
-                    <span className="session-preview" title={session.preview || session.cwd}>
-                      {session.preview || session.cwd}
+                      <span className="session-meta">
+                        <span>{formatDate(session.updatedAt)}</span>
+                        <span>{formatShort(session.tokensUsed)}</span>
+                      </span>
+                    </button>
+                    <span className="session-resume-row">
+                      <code className="session-resume-id" title={`codex resume ${session.resumeId || session.id}`}>
+                        {session.resumeId || session.id}
+                      </code>
                     </span>
-                    <span className="session-meta">
-                      <span>{formatDate(session.updatedAt)}</span>
-                      <span>{formatShort(session.tokensUsed)}</span>
-                    </span>
-                  </button>
+                  </div>
                   <button
                     className="rename-button"
                     type="button"
@@ -417,6 +460,8 @@ function SessionPane({
     scrollToLatest("smooth");
   }, [messages.length, runStatus, scrollToLatest, selected?.id, session?.updatedAt]);
 
+  const resumeId = selected?.resumeId || session?.resumeId || selected?.id || session?.id || "";
+
   const handleRunStart = useCallback((text: string) => {
     setLiveMessages((current) => [...current, createLiveMessage("user", text, "sent")]);
     setRunStatus("正在等待 Codex 回答");
@@ -436,7 +481,7 @@ function SessionPane({
         setRunStatus("正在接收回答");
       }
       if (summary.kind === "usage") {
-        setRunStatus(`已使用 ${formatShort(summary.usage?.total?.totalTokens || 0)} tokens`);
+        setRunStatus(`已使用 ${formatShort(summary.usage?.total?.totalTokens || 0)} 令牌`);
       }
       return;
     }
@@ -450,7 +495,7 @@ function SessionPane({
     }
   }, []);
 
-  if (loading) return <main className="content-pane loading-pane">Loading...</main>;
+  if (loading) return <main className="content-pane loading-pane">正在加载...</main>;
   if (!session) {
     return (
       <main className="content-pane thread-pane">
@@ -466,7 +511,20 @@ function SessionPane({
           ) : (
             <div className="empty-state empty-thread">
               <MessageSquare size={28} />
-              <strong>{selected ? selected.title : "No session"}</strong>
+              <strong>{selected ? selected.title : "未选择会话"}</strong>
+              {resumeId ? (
+                <span className="detail-resume-row">
+                  <code>{resumeId}</code>
+                  <button
+                    className="copy-id-button light"
+                    type="button"
+                    title="复制 resume id"
+                    onClick={() => void copyText(resumeId)}
+                  >
+                    <Copy size={12} />
+                  </button>
+                </span>
+              ) : null}
             </div>
           )}
         </section>
@@ -485,6 +543,18 @@ function SessionPane({
             <div className="path-line" title={session.cwd || session.filePath}>
               {session.cwd || basename(session.filePath)}
             </div>
+            <div className="detail-resume-row" title={`codex resume ${resumeId}`}>
+              <span>resume</span>
+              <code>{resumeId}</code>
+              <button
+                className="copy-id-button light"
+                type="button"
+                title="复制 resume id"
+                onClick={() => void copyText(resumeId)}
+              >
+                <Copy size={12} />
+              </button>
+            </div>
           </div>
           <div className="header-actions">
             <button className="icon-button" type="button" title="导出 Markdown" onClick={onExport}>
@@ -497,15 +567,15 @@ function SessionPane({
         </section>
 
         <section className="session-stats">
-          <Metric label="messages" value={messages.length} />
-          <Metric label="tokens" value={session.tokenUsage?.total?.totalTokens || 0} />
-          <Metric label="updated" value={formatDate(session.updatedAt)} />
+          <Metric label="消息" value={messages.length} />
+          <Metric label="令牌" value={session.tokenUsage?.total?.totalTokens || 0} />
+          <Metric label="更新" value={formatDate(session.updatedAt)} />
         </section>
 
         {session.rateLimits ? (
           <section className="inline-usage">
-            <RateBar label="primary" value={session.rateLimits.primary} />
-            <RateBar label="secondary" value={session.rateLimits.secondary} />
+            <RateBar label="短窗口" value={session.rateLimits.primary} />
+            <RateBar label="长窗口" value={session.rateLimits.secondary} />
           </section>
         ) : null}
 
@@ -539,8 +609,8 @@ function UsagePane({
     <main className="content-pane usage-pane">
       <section className="session-header compact">
         <div>
-          <p className="eyebrow">usage</p>
-          <h1>流量</h1>
+          <p className="eyebrow">用量</p>
+          <h1>限额与用量</h1>
           <div className="path-line">{usage?.codexHome || "~/.codex"}</div>
         </div>
         <button className="icon-button" type="button" title="刷新" onClick={onRefresh}>
@@ -549,45 +619,45 @@ function UsagePane({
       </section>
 
       <section className="session-stats">
-        <Metric label="account" value={usage?.summary.totalTokens || 0} />
-        <Metric label="peak day" value={usage?.summary.maxTokens || 0} />
-        <Metric label="local sessions" value={usage?.localSummary.sessions || 0} />
-        <Metric label="local sum" value={usage?.localSummary.totalTokens || 0} />
+        <Metric label="账户总量" value={usage?.summary.totalTokens || 0} />
+        <Metric label="单日峰值" value={usage?.summary.maxTokens || 0} />
+        <Metric label="本地会话" value={usage?.localSummary.sessions || 0} />
+        <Metric label="本地总量" value={usage?.localSummary.totalTokens || 0} />
       </section>
 
       <section className="usage-source">
         <span className={isLive ? "status-dot live" : "status-dot"} />
         <span>
           {isLive
-            ? `live account data from ${usage?.account.codexBinary || "codex app-server"}`
-            : `fallback from local session logs${usage?.account.error ? `: ${usage.account.error}` : ""}`}
+            ? `来自 ${usage?.account.codexBinary || "codex app-server"} 的实时账户数据`
+            : `来自本地会话日志的估算${usage?.account.error ? `：${usage.account.error}` : ""}`}
         </span>
-        <Metric label="updated" value={formatDate(usage?.summary.lastUpdated)} />
+        <Metric label="更新" value={formatDate(usage?.summary.lastUpdated)} />
       </section>
 
       <section className="usage-block">
-        <h2>Rate Limits</h2>
-        <RateBar label="primary" value={usage?.latest?.rateLimits?.primary || null} />
-        <RateBar label="secondary" value={usage?.latest?.rateLimits?.secondary || null} />
+        <h2>限额窗口</h2>
+        <RateBar label="短窗口" value={usage?.latest?.rateLimits?.primary || null} />
+        <RateBar label="长窗口" value={usage?.latest?.rateLimits?.secondary || null} />
         <div className="micro muted">
-          {usage?.latest?.observedAt ? `observed ${formatFullDate(usage.latest.observedAt)}` : "-"}
+          {usage?.latest?.observedAt ? `观测时间 ${formatFullDate(usage.latest.observedAt)}` : "-"}
         </div>
       </section>
 
       <section className="usage-block">
-        <h2>{accountSummary ? "Account Summary" : "Latest Token Count"}</h2>
+        <h2>{accountSummary ? "账户概览" : "最新令牌计数"}</h2>
         {accountSummary ? (
           <div className="token-grid">
-            <Metric label="lifetime" value={accountSummary.lifetimeTokens || 0} />
-            <Metric label="peak day" value={accountSummary.peakDailyTokens || 0} />
-            <Metric label="streak" value={accountSummary.currentStreakDays || 0} />
-            <Metric label="best streak" value={accountSummary.longestStreakDays || 0} />
+            <Metric label="累计" value={accountSummary.lifetimeTokens || 0} />
+            <Metric label="峰值日" value={accountSummary.peakDailyTokens || 0} />
+            <Metric label="连续天数" value={accountSummary.currentStreakDays || 0} />
+            <Metric label="最长连续" value={accountSummary.longestStreakDays || 0} />
             <Metric
-              label="longest turn"
+              label="最长轮次"
               value={
                 accountSummary.longestRunningTurnSec == null
                   ? "-"
-                  : `${accountSummary.longestRunningTurnSec}s`
+                  : `${accountSummary.longestRunningTurnSec} 秒`
               }
             />
           </div>
@@ -597,7 +667,7 @@ function UsagePane({
       </section>
 
       <section className="usage-block">
-        <h2>Daily</h2>
+        <h2>每日用量</h2>
         <div className="bar-list">
           {usage?.daily.map((item) => (
             <div className="bar-row" key={item.date}>
@@ -612,7 +682,7 @@ function UsagePane({
       </section>
 
       <section className="usage-block">
-        <h2>Workspaces</h2>
+        <h2>工作目录</h2>
         <div className="workspace-list">
           {usage?.byWorkspace.map((item) => (
             <div className="workspace-row" key={item.cwd}>
@@ -639,15 +709,19 @@ function UsageMiniPanel({
   const secondary = usage?.latest?.rateLimits?.secondary || null;
   const usedPercent = Math.max(0, Math.min(100, primary?.usedPercent || 0));
   const remainingPercent = Math.max(0, 100 - usedPercent);
-  const reset = primary?.resetsAt ? formatFullDate(primary.resetsAt * 1000) : "-";
   const observedAt = usage?.latest?.observedAt || usage?.account.observedAt || usage?.summary.lastUpdated || null;
   const sourceLabel = usage?.account.available ? "Codex 实时限额" : "本地记录估算";
+  const accountSummary = usage?.account.usage?.summary || null;
+  const latestUsage = usage?.latest?.usage?.total || null;
+  const daily = usage?.daily.slice(0, 7) || [];
+  const workspaces = usage?.byWorkspace.slice(0, 5) || [];
+  const maxDaily = Math.max(...daily.map((item) => item.tokens), 1);
 
   return (
-    <aside className="usage-mini" aria-label="usage">
+    <aside className="usage-mini" aria-label="限额与用量">
       <div className="usage-mini-top">
         <div>
-          <h2>限额</h2>
+          <h2>限额与用量</h2>
           <span>{sourceLabel}</span>
         </div>
         <button className="icon-button" type="button" title="刷新" onClick={onRefresh}>
@@ -656,34 +730,61 @@ function UsageMiniPanel({
       </div>
 
       <section className="usage-mini-metrics">
+        <Metric label="总令牌" value={usage?.summary.totalTokens || 0} />
+        <Metric label="本地会话" value={usage?.localSummary.sessions || 0} />
         <Metric label="当前窗口已用" value={`${usedPercent.toFixed(1)}%`} />
         <Metric label="剩余估算" value={`${remainingPercent.toFixed(1)}%`} />
-        <div className="metric usage-reset">
-          <span>重置时间</span>
-          <strong>{reset}</strong>
+      </section>
+
+      <section className="usage-mini-block">
+        <h3>限额窗口</h3>
+        <RateBar label="短窗口" value={primary} />
+        {secondary ? <RateBar label="长窗口" value={secondary} /> : null}
+      </section>
+
+      <section className="usage-mini-block">
+        <h3>{accountSummary ? "账户概览" : "最新令牌"}</h3>
+        {accountSummary ? (
+          <div className="usage-mini-metrics">
+            <Metric label="累计" value={accountSummary.lifetimeTokens || 0} />
+            <Metric label="峰值日" value={accountSummary.peakDailyTokens || 0} />
+            <Metric label="连续天数" value={accountSummary.currentStreakDays || 0} />
+            <Metric label="最长连续" value={accountSummary.longestStreakDays || 0} />
+          </div>
+        ) : (
+          <TokenGrid usage={latestUsage} />
+        )}
+      </section>
+
+      <section className="usage-mini-block">
+        <h3>每日用量</h3>
+        <div className="bar-list">
+          {daily.length ? daily.map((item) => (
+            <div className="bar-row" key={item.date}>
+              <span>{item.date.slice(5)}</span>
+              <div className="bar-track">
+                <div style={{ width: `${Math.max(2, (item.tokens / maxDaily) * 100)}%` }} />
+              </div>
+              <strong>{formatShort(item.tokens)}</strong>
+            </div>
+          )) : <div className="muted micro">暂无本地用量记录</div>}
         </div>
       </section>
 
-      {primary ? (
-        <div className="usage-mini-usage">
-          <div className="rate-row">
-            <div className="rate-meta">
-              <span>短窗口</span>
-              <strong>{usedPercent.toFixed(1)}%</strong>
+      <section className="usage-mini-block">
+        <h3>工作目录</h3>
+        <div className="workspace-list">
+          {workspaces.length ? workspaces.map((item) => (
+            <div className="workspace-row" key={item.cwd}>
+              <span title={item.cwd}>{basename(item.cwd || "未记录")}</span>
+              <strong>{formatShort(item.tokens)}</strong>
             </div>
-            <div className="meter" aria-label="primary rate limit used">
-              <div style={{ width: `${usedPercent}%` }} />
-            </div>
-            <div className="muted micro">
-              {primary.windowMinutes ? `${primary.windowMinutes} 分钟窗口` : "窗口 -"}
-            </div>
-          </div>
-          {secondary ? <RateBar label="长窗口" value={secondary} /> : null}
+          )) : <div className="muted micro">暂无工作目录统计</div>}
         </div>
-      ) : null}
+      </section>
 
       <div className="muted usage-mini-meta">
-        <span className="status-dot live" />
+        <span className={usage?.account.available ? "status-dot live" : "status-dot"} />
         <span>最近刷新：{formatFullDate(observedAt)}</span>
       </div>
     </aside>
@@ -707,8 +808,7 @@ function ThreadComposer({
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [statusText, setStatusText] = useState("Ready");
+  const [statusText, setStatusText] = useState("就绪");
 
   useEffect(() => {
     if (selected?.cwd) setCwd(selected.cwd);
@@ -719,17 +819,17 @@ function ThreadComposer({
     return window.codexDesk.onCodexEvent((event) => {
       onEvent(event);
       if (event.kind === "started") {
-        setStatusText("Running");
+        setStatusText("运行中");
       }
       if (event.kind === "done" || event.kind === "error") {
         setRunId(null);
         setStarting(false);
         setStatusText(
           event.kind === "error"
-            ? "Failed"
+            ? "失败"
             : event.code && event.code !== 0
-              ? `Exited ${event.code}`
-              : "Done"
+              ? `已退出 ${event.code}`
+              : "已完成"
         );
         onDone();
       }
@@ -739,9 +839,9 @@ function ThreadComposer({
   const start = async () => {
     const text = prompt.trim();
     if (!text || runId || starting) return;
-    const targetSessionId = selected?.id || undefined;
+    const targetSessionId = selected?.resumeId || selected?.id || undefined;
     setStarting(true);
-    setStatusText(targetSessionId ? "Starting current session" : "Starting new session");
+    setStatusText(targetSessionId ? "正在继续当前会话" : "正在创建新会话");
     onStart(text);
     try {
       const result = await window.codexDesk.runCodex({
@@ -752,10 +852,10 @@ function ThreadComposer({
       });
       setPrompt("");
       setRunId(result.runId);
-      setStatusText("Running");
+      setStatusText("运行中");
     } catch (error) {
       setStarting(false);
-      setStatusText("Failed");
+      setStatusText("失败");
       onEvent({
         runId: "local",
         kind: "error",
@@ -769,7 +869,7 @@ function ThreadComposer({
     await window.codexDesk.cancelRun(runId);
     setRunId(null);
     setStarting(false);
-    setStatusText("Stopped");
+    setStatusText("已停止");
   };
   const composerCwd = cwd || selected?.cwd || "";
   const canSend = Boolean(prompt.trim()) && !runId && !starting;
@@ -785,7 +885,7 @@ function ThreadComposer({
   const customSessionModel = selected?.model && !knownModelValues.includes(selected.model) ? selected.model : null;
 
   return (
-    <section className="thread-composer" aria-label="Codex composer">
+    <section className="thread-composer" aria-label="Codex 输入区">
       <div className="composer-shell">
         <textarea
           className="prompt-box"
@@ -794,6 +894,9 @@ function ThreadComposer({
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           onCompositionStart={() => setIsComposing(true)}
+          onCompositionUpdate={(event) => {
+            setPrompt(event.currentTarget.value);
+          }}
           onCompositionEnd={(event) => {
             setIsComposing(false);
             setPrompt(event.currentTarget.value);
@@ -805,27 +908,50 @@ function ThreadComposer({
               void start();
             }
           }}
-          placeholder={selected ? "继续当前 session" : "新建 session"}
+          placeholder={selected ? "继续当前会话" : "新建会话"}
         />
 
         <div className="composer-toolbar">
-          <div className="composer-left">
-            <span className="target-pill" title={selected?.id || "new session"}>
+          <div className="composer-context">
+            <span className="target-pill" title={selected ? `codex resume ${selected.resumeId || selected.id}` : "新会话"}>
               {currentPlace}
             </span>
-            <span className="composer-status">{statusText}</span>
+            <select
+              className="composer-select"
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              title="模型"
+            >
+              <option value="">{inheritedModelLabel}</option>
+              {customSessionModel ? <option value={customSessionModel}>{formatModelName(customSessionModel)}</option> : null}
+              {modelOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <label className="composer-cwd" title={composerCwd || "工作目录"}>
+              <span>目录</span>
+              <input
+                value={cwd}
+                onChange={(event) => setCwd(event.target.value)}
+                placeholder={selected?.cwd || "工作目录"}
+                title="工作目录"
+              />
+            </label>
+            <button
+              className="icon-button ghost"
+              type="button"
+              title="打开工作目录"
+              onClick={() => composerCwd && window.codexDesk.openPath(composerCwd)}
+              disabled={!composerCwd}
+            >
+              <FolderOpen size={16} />
+            </button>
           </div>
 
-          <div className="composer-right">
-            <button
-              className={`settings-button ${showSettings ? "active" : ""}`}
-              type="button"
-              title="运行设置"
-              onClick={() => setShowSettings((value) => !value)}
-            >
-              <Settings2 size={16} />
-              运行设置
-            </button>
+          <div className="composer-actions">
+            <span className="composer-status">{statusText}</span>
             <button className="send-button run" type="button" title="发送" onClick={start} disabled={!canSend}>
               <Play size={18} />
               发送
@@ -835,45 +961,6 @@ function ThreadComposer({
             </button>
           </div>
         </div>
-
-        {showSettings ? (
-          <section className="composer-settings">
-            <label className="setting-field">
-              <span>模型</span>
-              <select value={model} onChange={(event) => setModel(event.target.value)}>
-                <option value="">{inheritedModelLabel}</option>
-                {customSessionModel ? (
-                  <option value={customSessionModel}>{formatModelName(customSessionModel)}</option>
-                ) : null}
-                {modelOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <small>不选择时不覆盖 CLI 的 session 模型。</small>
-            </label>
-            <label className="setting-field wide">
-              <span>工作目录</span>
-              <input
-                value={cwd}
-                onChange={(event) => setCwd(event.target.value)}
-                placeholder={selected?.cwd || "工作目录"}
-                title="工作目录"
-              />
-            </label>
-            <button
-              className="open-dir-button"
-              type="button"
-              title="打开工作目录"
-              onClick={() => composerCwd && window.codexDesk.openPath(composerCwd)}
-              disabled={!composerCwd}
-            >
-              <FolderOpen size={16} />
-              打开目录
-            </button>
-          </section>
-        ) : null}
       </div>
     </section>
   );
@@ -887,20 +974,20 @@ function RunEventLine({ event }: { event: CodexRunEvent }) {
     return <pre className="run-line error">{event.text}</pre>;
   }
   if (event.kind === "done") {
-    return <div className="run-line event">done code={event.code ?? "-"} signal={event.signal ?? "-"}</div>;
+    return <div className="run-line event">完成 代码={event.code ?? "-"} 信号={event.signal ?? "-"}</div>;
   }
 
   const summary = event.summary;
   if (summary.kind === "message") {
     return (
       <article className={`run-message ${summary.role}`}>
-        <header>{summary.role === "user" ? "User" : "Codex"}</header>
+        <header>{summary.role === "user" ? "用户" : "Codex"}</header>
         <MarkdownBlock text={summary.text} />
       </article>
     );
   }
   if (summary.kind === "usage") {
-    return <div className="run-line usage">tokens {formatShort(summary.usage?.total?.totalTokens || 0)}</div>;
+    return <div className="run-line usage">令牌 {formatShort(summary.usage?.total?.totalTokens || 0)}</div>;
   }
   return <pre className={`run-line ${summary.kind}`}>{summary.text}</pre>;
 }
@@ -912,19 +999,53 @@ export default function App() {
   const [usage, setUsage] = useState<UsageSnapshot | null>(null);
   const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingSession, setLoadingSession] = useState(false);
   const [loadingUsage, setLoadingUsage] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [railWidth, setRailWidth] = useState(readStoredRailWidth);
+  const [theme, setTheme] = useState<ThemeMode>(readStoredTheme);
+  const sessionRefreshRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => {
+      const next = current === "dark" ? "light" : "dark";
+      window.localStorage.setItem(THEME_KEY, next);
+      return next;
+    });
+  }, []);
 
   const refreshSessions = useCallback(async () => {
-    const next = await window.codexDesk.listSessions();
-    setSessions(next);
-    setSelected((current) => {
-      if (!current) return next[0] || null;
-      return next.find((session) => session.id === current.id) || current;
-    });
+    if (sessionRefreshRef.current) return sessionRefreshRef.current;
+    setLoadingSessions(true);
+    const refresh = window.codexDesk
+      .listSessions()
+      .then((next) => {
+        setSessions(next);
+        setSelected((current) => {
+          if (!current) return next[0] || null;
+          return next.find((session) =>
+            session.id === current.id ||
+            session.resumeId === current.resumeId ||
+            session.filePath === current.filePath
+          ) || next[0] || null;
+        });
+      })
+      .catch((error) => {
+        setToast(`刷新 session 失败：${error instanceof Error ? error.message : String(error)}`);
+        window.setTimeout(() => setToast(null), 3600);
+      })
+      .finally(() => {
+        setLoadingSessions(false);
+        sessionRefreshRef.current = null;
+      });
+    sessionRefreshRef.current = refresh;
+    return refresh;
   }, []);
 
   const refreshUsage = useCallback(async () => {
@@ -1038,28 +1159,41 @@ export default function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={theme}>
       <nav className="topbar">
         <div className="brand">
-          <span className="brand-mark">C</span>
+          <span className="brand-mark" aria-hidden="true">
+            <img src={codexDeskIcon} alt="" />
+          </span>
           <div>
             <strong>Codex Desk</strong>
-            <small>Linux desktop</small>
+            <small>本地桌面</small>
           </div>
         </div>
         <div className="tabs">
           <MessageSquare size={16} />
           会话
         </div>
-        <button
-          className="link-button"
-          type="button"
-          onClick={() => selected && window.codexDesk.openPath(selected.cwd)}
-          disabled={!selected?.cwd}
-        >
-          <ExternalLink size={16} />
-          工作目录
-        </button>
+        <div className="topbar-actions">
+          <button
+            className="link-button"
+            type="button"
+            onClick={() => selected && window.codexDesk.openPath(selected.cwd)}
+            disabled={!selected?.cwd}
+          >
+            <ExternalLink size={16} />
+            工作目录
+          </button>
+          <button
+            className="icon-button theme-toggle"
+            type="button"
+            title={theme === "dark" ? "切换到亮色" : "切换到暗色"}
+            aria-label={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}
+            onClick={toggleTheme}
+          >
+            {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+          </button>
+        </div>
       </nav>
 
       <div className="workspace" style={workspaceStyle}>
@@ -1071,6 +1205,7 @@ export default function App() {
           onQuery={setQuery}
           onToggleArchived={setShowArchived}
           onRefresh={refreshSessions}
+          refreshing={loadingSessions}
           onRename={renameSession}
           onDelete={deleteSession}
           onSelect={(session) => {

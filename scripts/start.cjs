@@ -26,11 +26,28 @@ function hasProcess(names) {
 
 function inputMethodEnv() {
   if (process.platform !== "linux") return {};
-  const inputMethod = hasProcess(["fcitx5", "fcitx"])
-    ? "fcitx"
-    : hasProcess(["ibus-daemon"])
-      ? "ibus"
-      : null;
+  const normalizeInputMethod = (value) => {
+    if (!value) return null;
+    const lower = String(value).toLowerCase();
+    if (lower === "fcitx5") return "fcitx";
+    if (lower === "fcitx") return "fcitx";
+    if (lower === "ibus") return "ibus";
+    return null;
+  };
+
+  const xModifierMatch = String(process.env.XMODIFIERS || "").match(/@im=([^;]+)/i);
+  const configured = [
+    process.env.GTK_IM_MODULE,
+    process.env.QT_IM_MODULE,
+    xModifierMatch?.[1]
+  ]
+    .filter(Boolean)
+    .map(normalizeInputMethod)
+    .filter(Boolean);
+
+  const running = hasProcess(["fcitx5", "fcitx"]) ? "fcitx" : hasProcess(["ibus-daemon"]) ? "ibus" : null;
+  const fallback = hasProcess(["fcitx5", "fcitx"]) ? "fcitx" : hasProcess(["ibus-daemon"]) ? "ibus" : null;
+  const inputMethod = configured.find((value) => value === "fcitx" || value === "ibus") || running || fallback;
 
   if (!inputMethod) return {};
   return {
@@ -47,7 +64,10 @@ const child = spawn(electronBin, ["."], {
   stdio: "inherit",
   env: {
     ...process.env,
-    ...inputMethodEnv()
+    ...inputMethodEnv(),
+    LC_ALL: process.env.LC_ALL || "zh_CN.UTF-8",
+    LC_CTYPE: process.env.LC_CTYPE || "zh_CN.UTF-8",
+    LANG: process.env.LANG || "zh_CN.UTF-8"
   }
 });
 

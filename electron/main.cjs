@@ -7,15 +7,49 @@ const os = require("node:os");
 const path = require("node:path");
 
 const rootDir = path.resolve(__dirname, "..");
-const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+const fallbackCodexHome =
+  findProjectCodexHome(rootDir) ||
+  findProjectCodexHome(process.cwd()) ||
+  path.join(rootDir, ".codex");
+const codexHome = path.resolve(expandHome(process.env.CODEX_HOME || fallbackCodexHome));
+const codexHomes = [codexHome];
 const sessionsDir = path.join(codexHome, "sessions");
 const deletedSessionsDir = path.join(codexHome, "deleted_sessions");
 const stateDb = path.join(codexHome, "state_5.sqlite");
 const runningCodex = new Map();
 let mainWindow = null;
 
+function findProjectCodexHome(startDir) {
+  let current = path.resolve(startDir);
+  const home = path.resolve(os.homedir());
+  while (current && current !== path.dirname(current)) {
+    if (current === home) break;
+    const candidate = path.join(current, ".codex");
+    if (fsSync.existsSync(candidate)) return candidate;
+    current = path.dirname(current);
+  }
+  return null;
+}
+
+function codexHomePaths(targetCodexHome) {
+  return {
+    codexHome: targetCodexHome,
+    sessionsDir: path.join(targetCodexHome, "sessions"),
+    deletedSessionsDir: path.join(targetCodexHome, "deleted_sessions"),
+    stateDb: path.join(targetCodexHome, "state_5.sqlite")
+  };
+}
+
 function configureLinuxInputMethod() {
   if (process.platform !== "linux") return;
+  const normalizeInputMethod = (value) => {
+    if (!value) return null;
+    const lower = String(value).toLowerCase();
+    if (lower === "fcitx5") return "fcitx";
+    if (lower === "fcitx") return "fcitx";
+    if (lower === "ibus") return "ibus";
+    return null;
+  };
 
   const hasProcess = (names) => {
     try {
@@ -43,7 +77,8 @@ function configureLinuxInputMethod() {
     xModifierMatch?.[1]
   ]
     .filter(Boolean)
-    .map((value) => String(value).toLowerCase());
+    .map(normalizeInputMethod)
+    .filter(Boolean);
 
   const running = hasProcess(["fcitx5", "fcitx"]) ? "fcitx" : hasProcess(["ibus-daemon"]) ? "ibus" : null;
   const fallback = fsSync.existsSync(path.join(os.homedir(), ".config", "fcitx5")) ||
@@ -52,17 +87,16 @@ function configureLinuxInputMethod() {
     : fsSync.existsSync(path.join(os.homedir(), ".config", "ibus"))
       ? "ibus"
       : null;
-  const inputMethod = running || configured.find((value) => value === "fcitx" || value === "ibus") || fallback;
+  const inputMethod = configured.find((value) => value === "fcitx" || value === "ibus") || running || fallback;
 
   if (inputMethod) {
-    process.env.GTK_IM_MODULE = inputMethod;
-    process.env.QT_IM_MODULE = inputMethod;
-    process.env.XMODIFIERS = `@im=${inputMethod}`;
-    process.env.SDL_IM_MODULE = inputMethod;
-    process.env.CLUTTER_IM_MODULE = inputMethod;
+    process.env.GTK_IM_MODULE ||= inputMethod;
+    process.env.QT_IM_MODULE ||= inputMethod;
+    process.env.XMODIFIERS ||= `@im=${inputMethod}`;
+    process.env.SDL_IM_MODULE ||= inputMethod;
+    process.env.CLUTTER_IM_MODULE ||= inputMethod;
   }
 
-  app.commandLine.appendSwitch("gtk-version", "3");
   app.commandLine.appendSwitch("enable-wayland-ime");
 }
 
@@ -278,10 +312,49 @@ function sqlString(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+// Custom session titles live in an app-owned sidecar file. Codex owns the
+// `threads.title` column and regenerates it from the first user message on
+// every turn, so a rename written only to the DB is clobbered by any active
+// session. The override store is applied at top priority when listing.
+function titleOverridesPath(targetCodexHome) {
+  return path.join(targetCodexHome, "codexdesk-title-overrides.json");
+}
+
+async function readTitleOverrides(targetCodexHome) {
+  try {
+    const raw = await fs.readFile(titleOverridesPath(targetCodexHome), "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeTitleOverride(targetCodexHome, id, title) {
+  const overrides = await readTitleOverrides(targetCodexHome);
+  const next = { ...overrides, [id]: title };
+  await fs.writeFile(titleOverridesPath(targetCodexHome), JSON.stringify(next, null, 2), "utf8");
+}
+
+async function removeTitleOverride(targetCodexHome, id) {
+  const overrides = await readTitleOverrides(targetCodexHome);
+  if (!(id in overrides)) return;
+  const next = { ...overrides };
+  delete next[id];
+  await fs.writeFile(titleOverridesPath(targetCodexHome), JSON.stringify(next, null, 2), "utf8");
+}
+
 function isInsideDir(candidate, parent) {
   const resolved = path.resolve(candidate);
   const root = path.resolve(parent);
   return resolved === root || resolved.startsWith(`${root}${path.sep}`);
+}
+
+function findCodexHomeForSessionPath(filePath) {
+  const sourcePath = path.resolve(filePath);
+  return codexHomes.find((targetCodexHome) =>
+    isInsideDir(sourcePath, path.join(targetCodexHome, "sessions"))
+  ) || null;
 }
 
 function mergeableCommentary(previous, next) {
@@ -665,8 +738,10 @@ async function parseSessionFile(filePath) {
   const stat = await fs.stat(filePath);
   const firstUser = messages.find((item) => item.role === "user");
   const title = firstUser?.text?.split(/\r?\n/)[0]?.slice(0, 160) || path.basename(filePath);
+  const resumeId = resumeIdFromPath(filePath) || meta?.session_id || meta?.id || "";
   return {
     id: meta?.session_id || meta?.id || sessionIdFromPath(filePath),
+    resumeId: resumeId || sessionIdFromPath(filePath),
     filePath,
     title,
     preview: firstUser?.text?.slice(0, 280) || "",
@@ -684,14 +759,18 @@ async function parseSessionFile(filePath) {
 }
 
 function sessionIdFromPath(filePath) {
+  return resumeIdFromPath(filePath) || filePath;
+}
+
+function resumeIdFromPath(filePath) {
   const match = path.basename(filePath).match(
     /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/
   );
-  return match?.[1] || filePath;
+  return match?.[1] || "";
 }
 
-async function scanSessionsFallback() {
-  const files = await walkFiles(sessionsDir, (file) => file.endsWith(".jsonl"));
+async function scanSessionsFallback(targetSessionsDir = sessionsDir) {
+  const files = await walkFiles(targetSessionsDir, (file) => file.endsWith(".jsonl"));
   const summaries = [];
   for (const file of files) {
     try {
@@ -707,6 +786,7 @@ async function scanSessionsFallback() {
 function sessionToSummary(session) {
   return {
     id: session.id,
+    resumeId: session.resumeId || session.id,
     filePath: session.filePath,
     title: session.title,
     preview: session.preview,
@@ -720,9 +800,62 @@ function sessionToSummary(session) {
   };
 }
 
-async function listSessions() {
+function threadRowToSummary(row) {
+  return {
+    id: row.id,
+    resumeId: resumeIdFromPath(row.filePath) || row.id,
+    filePath: row.filePath,
+    title: row.title || row.preview || row.id,
+    preview: row.preview || "",
+    cwd: row.cwd || "",
+    model: row.model || "",
+    createdAt: Number(row.createdAt || 0),
+    updatedAt: Number(row.updatedAt || 0),
+    tokensUsed: Number(row.tokensUsed || 0),
+    archived: Boolean(row.archived),
+    source: row.source || ""
+  };
+}
+
+function sessionSummaryKey(session) {
+  return path.resolve(session.filePath || session.resumeId || session.id);
+}
+
+function sessionIdentityKey(session) {
+  return session.resumeId || session.id || session.filePath;
+}
+
+function mergeSessionSummary(dbSummary, fileSummary) {
+  const dbTitle = dbSummary.title && dbSummary.title !== dbSummary.id ? dbSummary.title : "";
+  return {
+    ...fileSummary,
+    ...dbSummary,
+    resumeId: dbSummary.resumeId || fileSummary.resumeId || dbSummary.id || fileSummary.id,
+    title: dbTitle || fileSummary.title || dbSummary.title || dbSummary.id || fileSummary.id,
+    preview: dbSummary.preview || fileSummary.preview || "",
+    cwd: dbSummary.cwd || fileSummary.cwd || "",
+    model: dbSummary.model || fileSummary.model || "",
+    createdAt: dbSummary.createdAt || fileSummary.createdAt || 0,
+    updatedAt: Math.max(dbSummary.updatedAt || 0, fileSummary.updatedAt || 0),
+    tokensUsed: Math.max(dbSummary.tokensUsed || 0, fileSummary.tokensUsed || 0),
+    source: dbSummary.source || fileSummary.source || ""
+  };
+}
+
+function dedupeSessionSummaries(summaries) {
+  const byIdentity = new Map();
+  for (const summary of summaries) {
+    const key = sessionIdentityKey(summary);
+    const current = byIdentity.get(key);
+    if (!current || summary.updatedAt > current.updatedAt) byIdentity.set(key, summary);
+  }
+  return [...byIdentity.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+async function listSessionsForHome(targetCodexHome) {
+  const paths = codexHomePaths(targetCodexHome);
   const rows = await querySqlite(
-    stateDb,
+    paths.stateDb,
     `select id, rollout_path as filePath, created_at_ms as createdAt,
             updated_at_ms as updatedAt, cwd, title, preview, tokens_used as tokensUsed,
             archived, model, source
@@ -731,23 +864,32 @@ async function listSessions() {
       limit 800`
   );
 
-  if (!rows.length) return scanSessionsFallback();
-
-  return rows
+  const fileSummaries = await scanSessionsFallback(paths.sessionsDir);
+  const dbSummaries = rows
     .filter((row) => row.filePath && fsSync.existsSync(row.filePath))
-    .map((row) => ({
-      id: row.id,
-      filePath: row.filePath,
-      title: row.title || row.preview || row.id,
-      preview: row.preview || "",
-      cwd: row.cwd || "",
-      model: row.model || "",
-      createdAt: Number(row.createdAt || 0),
-      updatedAt: Number(row.updatedAt || 0),
-      tokensUsed: Number(row.tokensUsed || 0),
-      archived: Boolean(row.archived),
-      source: row.source || ""
-    }));
+    .map(threadRowToSummary);
+
+  const overrides = await readTitleOverrides(targetCodexHome);
+  const applyOverride = (summary) => {
+    const custom = overrides[summary.id] || overrides[summary.resumeId];
+    return custom ? { ...summary, title: custom } : summary;
+  };
+
+  if (!dbSummaries.length) return fileSummaries.map(applyOverride);
+
+  const byFile = new Map(fileSummaries.map((summary) => [sessionSummaryKey(summary), summary]));
+  for (const dbSummary of dbSummaries) {
+    const key = sessionSummaryKey(dbSummary);
+    const fileSummary = byFile.get(key);
+    byFile.set(key, fileSummary ? mergeSessionSummary(dbSummary, fileSummary) : dbSummary);
+  }
+
+  return dedupeSessionSummaries([...byFile.values()]).map(applyOverride).slice(0, 800);
+}
+
+async function listSessions() {
+  const groups = await Promise.all(codexHomes.map((targetCodexHome) => listSessionsForHome(targetCodexHome)));
+  return dedupeSessionSummaries(groups.flat()).slice(0, 800);
 }
 
 function markdownEscapeTitle(text) {
@@ -1000,10 +1142,15 @@ ipcMain.handle("sessions:rename", async (_event, id, title) => {
   const nextTitle = String(title || "").trim().slice(0, 180);
   if (!sessionId) throw new Error("Session id is empty.");
   if (!nextTitle) throw new Error("Title is empty.");
-  await execSqlite(
-    stateDb,
-    `update threads set title = ${sqlString(nextTitle)} where id = ${sqlString(sessionId)}`
-  );
+  const sql = `update threads set title = ${sqlString(nextTitle)} where id = ${sqlString(sessionId)}`;
+  await Promise.all(codexHomes.map((targetCodexHome) =>
+    execSqlite(codexHomePaths(targetCodexHome).stateDb, sql).catch(() => false)
+  ));
+  // Persist to the app-owned override store so an active Codex session cannot
+  // clobber the custom title on its next turn.
+  await Promise.all(codexHomes.map((targetCodexHome) =>
+    writeTitleOverride(targetCodexHome, sessionId, nextTitle).catch(() => false)
+  ));
   return { id: sessionId, title: nextTitle };
 });
 
@@ -1012,15 +1159,17 @@ ipcMain.handle("sessions:delete", async (_event, id, filePath) => {
   const sourcePath = String(filePath || "").trim();
   if (!sessionId) throw new Error("Session id is empty.");
   if (!sourcePath) throw new Error("Session file path is empty.");
-  if (!isInsideDir(sourcePath, sessionsDir)) {
+  const targetCodexHome = findCodexHomeForSessionPath(sourcePath);
+  if (!targetCodexHome) {
     throw new Error("Refusing to delete a file outside the Codex sessions directory.");
   }
+  const targetPaths = codexHomePaths(targetCodexHome);
   if (!fsSync.existsSync(sourcePath)) {
     throw new Error("Session file was not found.");
   }
 
-  const relativePath = path.relative(sessionsDir, sourcePath);
-  const destinationPath = path.join(deletedSessionsDir, timestampPathSegment(), relativePath);
+  const relativePath = path.relative(targetPaths.sessionsDir, sourcePath);
+  const destinationPath = path.join(targetPaths.deletedSessionsDir, timestampPathSegment(), relativePath);
   await fs.mkdir(path.dirname(destinationPath), { recursive: true });
   await fs.rename(sourcePath, destinationPath);
 
@@ -1033,13 +1182,14 @@ delete from threads where id = ${sqlString(sessionId)};
 `;
 
   try {
-    await execSqlite(stateDb, sql);
+    await execSqlite(targetPaths.stateDb, sql);
   } catch (error) {
     await fs.mkdir(path.dirname(sourcePath), { recursive: true });
     await fs.rename(destinationPath, sourcePath).catch(() => {});
     throw error;
   }
 
+  await removeTitleOverride(targetCodexHome, sessionId).catch(() => {});
   return { id: sessionId, deletedPath: destinationPath };
 });
 
