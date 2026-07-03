@@ -10,3 +10,9 @@ test-results/
 .env.*
 !.env.example
 
+# Local working log (session scratch)
+wip.md
+
+# Cloud-sync conflict copies (Seafile/Nextcloud)
+*NSConflict*
+
