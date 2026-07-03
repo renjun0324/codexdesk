@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("codexDesk", {
   listSessions: () => ipcRenderer.invoke("sessions:list"),
   readSession: (filePath) => ipcRenderer.invoke("sessions:read", filePath),
   renameSession: (id, title) => ipcRenderer.invoke("sessions:rename", id, title),
+  deleteSession: (id, filePath) => ipcRenderer.invoke("sessions:delete", id, filePath),
   exportSession: (filePath) => ipcRenderer.invoke("sessions:export", filePath),
   getUsage: () => ipcRenderer.invoke("usage:get"),
   runCodex: (options) => ipcRenderer.invoke("codex:run", options),

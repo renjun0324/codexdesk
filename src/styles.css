@@ -35,6 +35,11 @@ body {
   overflow: hidden;
 }
 
+body.resizing-rail {
+  cursor: col-resize;
+  user-select: none;
+}
+
 button,
 input,
 textarea {
@@ -133,8 +138,36 @@ button:disabled {
 
 .workspace {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr) 320px;
+  grid-template-columns: 330px 8px minmax(0, 1fr) 320px;
   min-height: 0;
+}
+
+.rail-resizer {
+  position: relative;
+  min-height: 0;
+  background:
+    linear-gradient(90deg, rgb(0 0 0 / 10%), transparent 50%, rgb(255 255 255 / 48%)),
+    #d4dbd2;
+  cursor: col-resize;
+}
+
+.rail-resizer::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 44px;
+  content: "";
+  background: rgb(39 48 44 / 28%);
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+}
+
+.rail-resizer:hover,
+body.resizing-rail .rail-resizer {
+  background:
+    linear-gradient(90deg, rgb(47 143 131 / 26%), transparent 50%, rgb(255 255 255 / 62%)),
+    #c7d6d1;
 }
 
 .usage-mini {
@@ -310,7 +343,7 @@ button:disabled {
 .session-item {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
   gap: 6px;
   align-items: start;
   width: 100%;
@@ -340,6 +373,7 @@ button:disabled {
 }
 
 .rename-button,
+.delete-button,
 .rename-action {
   display: inline-grid;
   place-items: center;
@@ -354,14 +388,24 @@ button:disabled {
 }
 
 .session-item.active .rename-button,
+.session-item.active .delete-button,
 .session-item.active .rename-action {
   background: rgb(23 32 28 / 6%);
   border-color: rgb(23 32 28 / 10%);
 }
 
 .rename-button:hover,
+.delete-button:hover,
 .rename-action:hover {
   opacity: 1;
+}
+
+.delete-button {
+  color: #ffdede;
+}
+
+.session-item.active .delete-button {
+  color: var(--danger);
 }
 
 .rename-editor {

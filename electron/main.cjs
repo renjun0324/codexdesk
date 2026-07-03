@@ -9,8 +9,10 @@ const path = require("node:path");
 const rootDir = path.resolve(__dirname, "..");
 const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const sessionsDir = path.join(codexHome, "sessions");
+const deletedSessionsDir = path.join(codexHome, "deleted_sessions");
 const stateDb = path.join(codexHome, "state_5.sqlite");
 const runningCodex = new Map();
+let mainWindow = null;
 
 function configureLinuxInputMethod() {
   if (process.platform !== "linux") return;
@@ -104,6 +106,7 @@ function createWindow() {
     minWidth: 1040,
     minHeight: 680,
     title: "Codex Desk",
+    icon: path.join(rootDir, "assets", "codexdesk.svg"),
     backgroundColor: "#f4f5f0",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -126,14 +129,36 @@ function createWindow() {
   win.webContents.on("render-process-gone", (_event, details) => {
     console.error(`[renderer:gone] ${JSON.stringify(details)}`);
   });
+
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+
+  mainWindow = win;
+  return win;
 }
 
-app.whenReady().then(() => {
-  createWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) {
+      createWindow();
+      return;
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
   });
-});
+
+  app.whenReady().then(() => {
+    createWindow();
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+}
 
 app.on("window-all-closed", () => {
   for (const child of runningCodex.values()) child.kill("SIGTERM");
@@ -150,6 +175,49 @@ function querySqlite(dbPath, sql) {
     execFile(
       "sqlite3",
       ["-json", dbPath, sql],
+      { maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout) => {
+        if (error) {
+          querySqliteWithPython(dbPath, sql).then(resolve);
+          return;
+        }
+        if (!stdout.trim()) {
+          resolve([]);
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch {
+          resolve([]);
+        }
+      }
+    );
+  });
+}
+
+function querySqliteWithPython(dbPath, sql) {
+  return new Promise((resolve) => {
+    const script = `
+import json
+import sqlite3
+import sys
+
+db_path, query = sys.argv[1], sys.argv[2]
+connection = None
+try:
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    rows = connection.execute(query).fetchall()
+    print(json.dumps([dict(row) for row in rows], ensure_ascii=False))
+except Exception:
+    sys.exit(1)
+finally:
+    if connection is not None:
+        connection.close()
+`;
+    execFile(
+      "python3",
+      ["-c", script, dbPath, sql],
       { maxBuffer: 64 * 1024 * 1024 },
       (error, stdout) => {
         if (error || !stdout.trim()) {
@@ -174,6 +242,30 @@ function execSqlite(dbPath, sql) {
     }
     execFile("sqlite3", [dbPath, sql], { maxBuffer: 1024 * 1024 }, (error) => {
       if (error) {
+        execSqliteWithPython(dbPath, sql).then(resolve, reject);
+        return;
+      }
+      resolve(true);
+    });
+  });
+}
+
+function execSqliteWithPython(dbPath, sql) {
+  return new Promise((resolve, reject) => {
+    const script = `
+import sqlite3
+import sys
+
+db_path, query = sys.argv[1], sys.argv[2]
+connection = sqlite3.connect(db_path)
+try:
+    connection.executescript(query)
+    connection.commit()
+finally:
+    connection.close()
+`;
+    execFile("python3", ["-c", script, dbPath, sql], { maxBuffer: 1024 * 1024 }, (error) => {
+      if (error) {
         reject(error);
         return;
       }
@@ -184,6 +276,42 @@ function execSqlite(dbPath, sql) {
 
 function sqlString(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function isInsideDir(candidate, parent) {
+  const resolved = path.resolve(candidate);
+  const root = path.resolve(parent);
+  return resolved === root || resolved.startsWith(`${root}${path.sep}`);
+}
+
+function mergeableCommentary(previous, next) {
+  return (
+    previous &&
+    next &&
+    previous.kind === "message" &&
+    next.kind === "message" &&
+    previous.role === "assistant" &&
+    next.role === "assistant" &&
+    previous.phase === "commentary" &&
+    next.phase === "commentary"
+  );
+}
+
+function appendSessionMessage(messages, next) {
+  const previous = messages[messages.length - 1];
+  if (mergeableCommentary(previous, next)) {
+    previous.text = `${previous.text.trim()}\n\n${next.text.trim()}`.trim();
+    previous.timestamp = next.timestamp || previous.timestamp;
+    previous.id = `${previous.id}+${next.id}`;
+    return;
+  }
+  if (!previous || previous.role !== next.role || previous.text !== next.text) {
+    messages.push(next);
+  }
+}
+
+function timestampPathSegment() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 async function walkFiles(dir, predicate, found = []) {
@@ -525,10 +653,7 @@ async function parseSessionFile(filePath) {
     if (parsed.kind === "meta") {
       meta = parsed.payload;
     } else if (parsed.kind === "message") {
-      const previous = messages[messages.length - 1];
-      if (!previous || previous.role !== parsed.role || previous.text !== parsed.text) {
-        messages.push(parsed);
-      }
+      appendSessionMessage(messages, parsed);
     } else if (parsed.kind === "token_count") {
       tokenUsage = parsed.usage;
       rateLimits = parsed.rateLimits;
@@ -880,6 +1005,42 @@ ipcMain.handle("sessions:rename", async (_event, id, title) => {
     `update threads set title = ${sqlString(nextTitle)} where id = ${sqlString(sessionId)}`
   );
   return { id: sessionId, title: nextTitle };
+});
+
+ipcMain.handle("sessions:delete", async (_event, id, filePath) => {
+  const sessionId = String(id || "").trim();
+  const sourcePath = String(filePath || "").trim();
+  if (!sessionId) throw new Error("Session id is empty.");
+  if (!sourcePath) throw new Error("Session file path is empty.");
+  if (!isInsideDir(sourcePath, sessionsDir)) {
+    throw new Error("Refusing to delete a file outside the Codex sessions directory.");
+  }
+  if (!fsSync.existsSync(sourcePath)) {
+    throw new Error("Session file was not found.");
+  }
+
+  const relativePath = path.relative(sessionsDir, sourcePath);
+  const destinationPath = path.join(deletedSessionsDir, timestampPathSegment(), relativePath);
+  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+  await fs.rename(sourcePath, destinationPath);
+
+  const sql = `
+delete from thread_dynamic_tools where thread_id = ${sqlString(sessionId)};
+delete from thread_spawn_edges
+ where parent_thread_id = ${sqlString(sessionId)}
+    or child_thread_id = ${sqlString(sessionId)};
+delete from threads where id = ${sqlString(sessionId)};
+`;
+
+  try {
+    await execSqlite(stateDb, sql);
+  } catch (error) {
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+    await fs.rename(destinationPath, sourcePath).catch(() => {});
+    throw error;
+  }
+
+  return { id: sessionId, deletedPath: destinationPath };
 });
 
 ipcMain.handle("sessions:export", async (_event, filePath) => {

@@ -10,9 +10,18 @@ import {
   Search,
   Settings2,
   Square,
+  Trash2,
   X
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -32,6 +41,21 @@ const shortNumber = new Intl.NumberFormat("zh-CN", {
   notation: "compact",
   maximumFractionDigits: 1
 });
+const RAIL_WIDTH_KEY = "codexdesk.sessionRailWidth";
+const DEFAULT_RAIL_WIDTH = 330;
+const MIN_RAIL_WIDTH = 260;
+const MAX_RAIL_WIDTH = 560;
+
+function clampRailWidth(value: number) {
+  return Math.max(MIN_RAIL_WIDTH, Math.min(MAX_RAIL_WIDTH, value));
+}
+
+function readStoredRailWidth() {
+  if (typeof window === "undefined") return DEFAULT_RAIL_WIDTH;
+  const raw = window.localStorage.getItem(RAIL_WIDTH_KEY);
+  const parsed = raw ? Number(raw) : DEFAULT_RAIL_WIDTH;
+  return Number.isFinite(parsed) ? clampRailWidth(parsed) : DEFAULT_RAIL_WIDTH;
+}
 
 function formatNumber(value?: number | null) {
   return numberFormat.format(value || 0);
@@ -158,6 +182,28 @@ function createLiveMessage(role: SessionMessage["role"], text: string, phase: st
   };
 }
 
+function appendLiveMessage(current: SessionMessage[], next: SessionMessage) {
+  const previous = current[current.length - 1];
+  if (
+    previous &&
+    previous.role === "assistant" &&
+    next.role === "assistant" &&
+    previous.phase === next.phase &&
+    (next.phase === "commentary" || next.phase === "live")
+  ) {
+    return [
+      ...current.slice(0, -1),
+      {
+        ...previous,
+        id: `${previous.id}+${next.id}`,
+        timestamp: next.timestamp || previous.timestamp,
+        text: `${previous.text.trim()}\n\n${next.text.trim()}`.trim()
+      }
+    ];
+  }
+  return [...current, next];
+}
+
 function SessionList({
   sessions,
   selected,
@@ -167,6 +213,7 @@ function SessionList({
   onToggleArchived,
   onSelect,
   onRename,
+  onDelete,
   onRefresh
 }: {
   sessions: SessionSummary[];
@@ -177,11 +224,13 @@ function SessionList({
   onToggleArchived: (value: boolean) => void;
   onSelect: (session: SessionSummary) => void;
   onRename: (session: SessionSummary, title: string) => Promise<void>;
+  onDelete: (session: SessionSummary) => Promise<void>;
   onRefresh: () => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -213,6 +262,16 @@ function SessionList({
       cancelRename();
     } finally {
       setSavingId(null);
+    }
+  };
+
+  const deleteSession = async (session: SessionSummary) => {
+    if (deletingId) return;
+    setDeletingId(session.id);
+    try {
+      await onDelete(session);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -291,6 +350,15 @@ function SessionList({
                   >
                     <Edit3 size={15} />
                   </button>
+                  <button
+                    className="delete-button"
+                    type="button"
+                    title="删除"
+                    onClick={() => void deleteSession(session)}
+                    disabled={deletingId === session.id}
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </>
               )}
             </article>
@@ -362,10 +430,9 @@ function SessionPane({
     if (event.kind === "record") {
       const summary = event.summary;
       if (summary.kind === "message" && summary.role === "assistant") {
-        setLiveMessages((current) => [
-          ...current,
-          createLiveMessage("assistant", summary.text, summary.phase || "live")
-        ]);
+        setLiveMessages((current) =>
+          appendLiveMessage(current, createLiveMessage("assistant", summary.text, summary.phase || "live"))
+        );
         setRunStatus("正在接收回答");
       }
       if (summary.kind === "usage") {
@@ -374,7 +441,7 @@ function SessionPane({
       return;
     }
     if (event.kind === "stderr" || event.kind === "error") {
-      setLiveMessages((current) => [...current, createLiveMessage("assistant", event.text, "error")]);
+      setLiveMessages((current) => appendLiveMessage(current, createLiveMessage("assistant", event.text, "error")));
       setRunStatus("运行失败");
       return;
     }
@@ -849,6 +916,7 @@ export default function App() {
   const [loadingUsage, setLoadingUsage] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
+  const [railWidth, setRailWidth] = useState(readStoredRailWidth);
 
   const refreshSessions = useCallback(async () => {
     const next = await window.codexDesk.listSessions();
@@ -908,6 +976,54 @@ export default function App() {
     setSelected((current) => (current?.id === result.id ? { ...current, title: result.title } : current));
   }, []);
 
+  const deleteSession = useCallback(async (session: SessionSummary) => {
+    const confirmed = window.confirm(`删除这个 session？\n\n${session.title}\n\nJSONL 会移到 deleted_sessions，可手动恢复。`);
+    if (!confirmed) return;
+
+    try {
+      await window.codexDesk.deleteSession(session.id, session.filePath);
+      const index = sessions.findIndex((item) => item.id === session.id);
+      const nextSessions = sessions.filter((item) => item.id !== session.id);
+      const replacement = nextSessions[index] || nextSessions[index - 1] || nextSessions[0] || null;
+      setSessions(nextSessions);
+      setSelected((current) => (current?.id === session.id ? replacement : current));
+      setDetail((current) => (current?.id === session.id ? null : current));
+      void refreshUsage();
+      setToast(`已删除 ${session.title}`);
+      window.setTimeout(() => setToast(null), 2600);
+    } catch (error) {
+      setToast(`删除失败：${error instanceof Error ? error.message : String(error)}`);
+      window.setTimeout(() => setToast(null), 3600);
+    }
+  }, [refreshUsage, sessions]);
+
+  const startRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = railWidth;
+    let nextWidth = startWidth;
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      nextWidth = clampRailWidth(startWidth + moveEvent.clientX - startX);
+      setRailWidth(nextWidth);
+    };
+
+    const handleUp = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      document.body.classList.remove("resizing-rail");
+      window.localStorage.setItem(RAIL_WIDTH_KEY, String(nextWidth));
+    };
+
+    document.body.classList.add("resizing-rail");
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp, { once: true });
+  }, [railWidth]);
+
+  const workspaceStyle = {
+    gridTemplateColumns: `${railWidth}px 8px minmax(0, 1fr) 320px`
+  } satisfies CSSProperties;
+
   const exportCurrent = async () => {
     if (!selected) return;
     const result = await window.codexDesk.exportSession(selected.filePath);
@@ -946,7 +1062,7 @@ export default function App() {
         </button>
       </nav>
 
-      <div className="workspace">
+      <div className="workspace" style={workspaceStyle}>
         <SessionList
           sessions={sessions}
           selected={selected?.id || null}
@@ -956,9 +1072,17 @@ export default function App() {
           onToggleArchived={setShowArchived}
           onRefresh={refreshSessions}
           onRename={renameSession}
+          onDelete={deleteSession}
           onSelect={(session) => {
             setSelected(session);
           }}
+        />
+        <div
+          className="rail-resizer"
+          role="separator"
+          aria-label="调整会话列表宽度"
+          aria-orientation="vertical"
+          onPointerDown={startRailResize}
         />
 
         <SessionPane
