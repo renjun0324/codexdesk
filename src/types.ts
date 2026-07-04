@@ -37,6 +37,7 @@ export type SessionSummary = {
   updatedAt: number;
   tokensUsed: number;
   archived: boolean;
+  pinned: boolean;
   source: string;
 };
 
@@ -69,6 +70,8 @@ export type SessionDetail = {
   source: string;
   createdAt: number;
   updatedAt: number;
+  archived: boolean;
+  pinned: boolean;
   messages: SessionMessage[];
   events: SessionEvent[];
   tokenUsage: {
@@ -130,6 +133,11 @@ export type UsageSnapshot = {
 
 export type LatestUsage = NonNullable<UsageSnapshot["latest"]>["usage"];
 
+export type CodexModel = {
+  id: string;
+  name: string;
+};
+
 export type RunSummary =
   | { kind: "message"; role: Role; phase: string | null; text: string }
   | { kind: "tool"; text: string }
@@ -150,8 +158,11 @@ export type CodexDeskApi = {
   listSessions: () => Promise<SessionSummary[]>;
   readSession: (filePath: string) => Promise<SessionDetail>;
   renameSession: (id: string, title: string) => Promise<{ id: string; title: string }>;
+  pinSession: (id: string, filePath: string, pinned: boolean) => Promise<{ id: string; pinned: boolean }>;
+  archiveSession: (id: string, filePath: string, archived: boolean) => Promise<{ id: string; archived: boolean }>;
   deleteSession: (id: string, filePath: string) => Promise<{ id: string; deletedPath: string }>;
   exportSession: (filePath: string) => Promise<{ canceled: boolean; filePath?: string }>;
+  listModels: () => Promise<CodexModel[]>;
   getUsage: () => Promise<UsageSnapshot>;
   runCodex: (options: {
     prompt: string;

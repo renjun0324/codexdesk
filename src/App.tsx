@@ -1,4 +1,6 @@
 import {
+  Archive,
+  ArchiveRestore,
   Check,
   Copy,
   Download,
@@ -7,6 +9,8 @@ import {
   FolderOpen,
   MessageSquare,
   Moon,
+  Pin,
+  Plus,
   Play,
   RefreshCcw,
   Search,
@@ -29,6 +33,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import type {
+  CodexModel,
   CodexRunEvent,
   RateLimitWindow,
   SessionDetail,
@@ -45,11 +50,18 @@ const shortNumber = new Intl.NumberFormat("zh-CN", {
 });
 const RAIL_WIDTH_KEY = "codexdesk.sessionRailWidth";
 const THEME_KEY = "codexdesk.theme";
+const MODEL_KEY = "codexdesk.model";
 const DEFAULT_RAIL_WIDTH = 330;
 const MIN_RAIL_WIDTH = 260;
 const MAX_RAIL_WIDTH = 560;
 const codexDeskIcon = new URL("../assets/codexdesk.svg", import.meta.url).href;
 type ThemeMode = "light" | "dark";
+const DEFAULT_DESK_MODEL = "gpt-5.5";
+const FALLBACK_MODEL_OPTIONS: CodexModel[] = [
+  { id: "gpt-5.5", name: "GPT-5.5" },
+  { id: "gpt-5-codex", name: "GPT-5 / Codex" },
+  { id: "gpt-5", name: "GPT-5" }
+];
 
 function clampRailWidth(value: number) {
   return Math.max(MIN_RAIL_WIDTH, Math.min(MAX_RAIL_WIDTH, value));
@@ -67,6 +79,11 @@ function readStoredTheme(): ThemeMode {
   const stored = window.localStorage.getItem(THEME_KEY);
   if (stored === "light" || stored === "dark") return stored;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function readStoredModel() {
+  if (typeof window === "undefined") return DEFAULT_DESK_MODEL;
+  return window.localStorage.getItem(MODEL_KEY) || DEFAULT_DESK_MODEL;
 }
 
 function formatNumber(value?: number | null) {
@@ -96,6 +113,13 @@ function basename(filePath: string) {
   return filePath.split("/").filter(Boolean).pop() || filePath;
 }
 
+function sortSessions(sessions: SessionSummary[]) {
+  return [...sessions].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return b.updatedAt - a.updatedAt;
+  });
+}
+
 async function copyText(text: string) {
   const value = text.trim();
   if (!value) return;
@@ -120,6 +144,7 @@ async function copyText(text: string) {
 
 function formatModelName(model?: string | null) {
   if (!model) return "";
+  if (model === "gpt-5.5") return "GPT-5.5";
   if (model === "gpt-5-codex") return "GPT-5 / Codex";
   if (model === "gpt-5") return "GPT-5";
   return model;
@@ -247,6 +272,8 @@ function SessionList({
   onToggleArchived,
   onSelect,
   onRename,
+  onTogglePinned,
+  onToggleSessionArchived,
   onDelete,
   onRefresh,
   refreshing
@@ -259,6 +286,8 @@ function SessionList({
   onToggleArchived: (value: boolean) => void;
   onSelect: (session: SessionSummary) => void;
   onRename: (session: SessionSummary, title: string) => Promise<void>;
+  onTogglePinned: (session: SessionSummary, pinned: boolean) => Promise<void>;
+  onToggleSessionArchived: (session: SessionSummary, archived: boolean) => Promise<void>;
   onDelete: (session: SessionSummary) => Promise<void>;
   onRefresh: () => void;
   refreshing: boolean;
@@ -266,17 +295,19 @@ function SessionList({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [pinningId, setPinningId] = useState<string | null>(null);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return sessions.filter((session) => {
+    return sortSessions(sessions.filter((session) => {
       if (!showArchived && session.archived) return false;
       if (!needle) return true;
       return `${session.id} ${session.resumeId} ${session.title} ${session.preview} ${session.cwd} ${session.model}`
         .toLowerCase()
         .includes(needle);
-    });
+    }));
   }, [query, sessions, showArchived]);
 
   const beginRename = (session: SessionSummary) => {
@@ -311,6 +342,26 @@ function SessionList({
     }
   };
 
+  const togglePinned = async (session: SessionSummary) => {
+    if (pinningId) return;
+    setPinningId(session.id);
+    try {
+      await onTogglePinned(session, !session.pinned);
+    } finally {
+      setPinningId(null);
+    }
+  };
+
+  const toggleArchived = async (session: SessionSummary) => {
+    if (archivingId) return;
+    setArchivingId(session.id);
+    try {
+      await onToggleSessionArchived(session, !session.archived);
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
   return (
     <aside className="session-rail">
       <div className="rail-top">
@@ -335,7 +386,10 @@ function SessionList({
         {filtered.map((session) => {
           const editing = editingId === session.id;
           return (
-            <article className={`session-item ${selected === session.id ? "active" : ""}`} key={session.id}>
+            <article
+              className={`session-item ${selected === session.id ? "active" : ""} ${session.pinned ? "pinned" : ""} ${session.archived ? "archived" : ""}`}
+              key={session.id}
+            >
               {editing ? (
                 <div className="rename-editor">
                   <input
@@ -379,29 +433,51 @@ function SessionList({
                         <span>{formatShort(session.tokensUsed)}</span>
                       </span>
                     </button>
-                    <span className="session-resume-row">
-                      <code className="session-resume-id" title={`codex resume ${session.resumeId || session.id}`}>
-                        {session.resumeId || session.id}
-                      </code>
-                    </span>
+                  <span className="session-resume-row">
+                    <code className="session-resume-id" title={`codex resume ${session.resumeId || session.id}`}>
+                      {session.resumeId || session.id}
+                    </code>
+                  </span>
                   </div>
-                  <button
-                    className="rename-button"
-                    type="button"
-                    title="重命名"
-                    onClick={() => beginRename(session)}
-                  >
-                    <Edit3 size={15} />
-                  </button>
-                  <button
-                    className="delete-button"
-                    type="button"
-                    title="删除"
-                    onClick={() => void deleteSession(session)}
-                    disabled={deletingId === session.id}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                  <div className="session-actions">
+                    <button
+                      className={`pin-button ${session.pinned ? "pinned" : ""}`}
+                      type="button"
+                      title={session.pinned ? "取消置顶" : "置顶"}
+                      aria-label={session.pinned ? "取消置顶" : "置顶"}
+                      onClick={() => void togglePinned(session)}
+                      disabled={pinningId === session.id}
+                    >
+                      <Pin size={15} fill={session.pinned ? "currentColor" : "none"} />
+                    </button>
+                    <button
+                      className={`archive-button ${session.archived ? "archived" : ""}`}
+                      type="button"
+                      title={session.archived ? "取消归档" : "归档"}
+                      aria-label={session.archived ? "取消归档" : "归档"}
+                      onClick={() => void toggleArchived(session)}
+                      disabled={archivingId === session.id}
+                    >
+                      {session.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
+                    </button>
+                    <button
+                      className="rename-button"
+                      type="button"
+                      title="重命名"
+                      onClick={() => beginRename(session)}
+                    >
+                      <Edit3 size={15} />
+                    </button>
+                    <button
+                      className="delete-button"
+                      type="button"
+                      title="删除"
+                      onClick={() => void deleteSession(session)}
+                      disabled={deletingId === session.id}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
                 </>
               )}
             </article>
@@ -416,6 +492,7 @@ function SessionPane({
   session,
   selected,
   loading,
+  models,
   onExport,
   onShowFile,
   onRunDone
@@ -423,6 +500,7 @@ function SessionPane({
   session: SessionDetail | null;
   selected: SessionSummary | null;
   loading: boolean;
+  models: CodexModel[];
   onExport: () => void;
   onShowFile: () => void;
   onRunDone: () => void;
@@ -485,13 +563,27 @@ function SessionPane({
       }
       return;
     }
-    if (event.kind === "stderr" || event.kind === "error") {
+    if (event.kind === "stderr") {
+      const text = event.text.trim();
+      if (text) {
+        setLiveMessages((current) => appendLiveMessage(current, createLiveMessage("assistant", text, "日志")));
+      }
+      setRunStatus("Codex 正在运行");
+      return;
+    }
+    if (event.kind === "error") {
       setLiveMessages((current) => appendLiveMessage(current, createLiveMessage("assistant", event.text, "error")));
       setRunStatus("运行失败");
       return;
     }
     if (event.kind === "done") {
-      setRunStatus(event.code && event.code !== 0 ? `退出码 ${event.code}` : "已完成，正在刷新会话");
+      setRunStatus(
+        event.signal
+          ? `已停止（${event.signal}）`
+          : event.code && event.code !== 0
+            ? `退出码 ${event.code}`
+            : "已完成，正在刷新会话"
+      );
     }
   }, []);
 
@@ -528,7 +620,13 @@ function SessionPane({
             </div>
           )}
         </section>
-        <ThreadComposer selected={selected} onStart={handleRunStart} onEvent={handleRunEvent} onDone={onRunDone} />
+        <ThreadComposer
+          selected={selected}
+          models={models}
+          onStart={handleRunStart}
+          onEvent={handleRunEvent}
+          onDone={onRunDone}
+        />
       </main>
     );
   }
@@ -587,7 +685,13 @@ function SessionPane({
           <div ref={bottomRef} />
         </section>
       </section>
-      <ThreadComposer selected={selected} onStart={handleRunStart} onEvent={handleRunEvent} onDone={onRunDone} />
+      <ThreadComposer
+        selected={selected}
+        models={models}
+        onStart={handleRunStart}
+        onEvent={handleRunEvent}
+        onDone={onRunDone}
+      />
     </main>
   );
 }
@@ -793,43 +897,60 @@ function UsageMiniPanel({
 
 function ThreadComposer({
   selected,
+  models,
   onStart,
   onEvent,
   onDone
 }: {
   selected: SessionSummary | null;
+  models: CodexModel[];
   onStart: (prompt: string) => void;
   onEvent: (event: CodexRunEvent) => void;
   onDone: () => void;
 }) {
   const [cwd, setCwd] = useState(selected?.cwd || "");
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(readStoredModel);
   const [prompt, setPrompt] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [statusText, setStatusText] = useState("就绪");
+  const runIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (selected?.cwd) setCwd(selected.cwd);
-    setModel("");
   }, [selected?.cwd, selected?.id]);
 
   useEffect(() => {
+    const options = models.length ? models : FALLBACK_MODEL_OPTIONS;
+    const ids = new Set(options.map((option) => option.id));
+    const nextModel = ids.has(model)
+      ? model
+      : ids.has(DEFAULT_DESK_MODEL)
+        ? DEFAULT_DESK_MODEL
+        : options[0]?.id || DEFAULT_DESK_MODEL;
+    if (nextModel !== model) {
+      setModel(nextModel);
+      window.localStorage.setItem(MODEL_KEY, nextModel);
+    }
+  }, [model, models]);
+
+  useEffect(() => {
     return window.codexDesk.onCodexEvent((event) => {
+      if (!runIdRef.current || event.runId !== runIdRef.current) return;
       onEvent(event);
-      if (event.kind === "started") {
-        setStatusText("运行中");
-      }
       if (event.kind === "done" || event.kind === "error") {
+        runIdRef.current = null;
         setRunId(null);
         setStarting(false);
         setStatusText(
           event.kind === "error"
             ? "失败"
-            : event.code && event.code !== 0
-              ? `已退出 ${event.code}`
-              : "已完成"
+            : event.signal
+              ? "已停止"
+              : event.code && event.code !== 0
+                ? `已退出 ${event.code}`
+                : "已完成"
         );
         onDone();
       }
@@ -847,10 +968,11 @@ function ThreadComposer({
       const result = await window.codexDesk.runCodex({
         prompt: text,
         cwd: cwd || selected?.cwd || undefined,
-        model: model || undefined,
+        model: model || DEFAULT_DESK_MODEL,
         sessionId: targetSessionId
       });
       setPrompt("");
+      runIdRef.current = result.runId;
       setRunId(result.runId);
       setStatusText("运行中");
     } catch (error) {
@@ -867,6 +989,7 @@ function ThreadComposer({
   const cancel = async () => {
     if (!runId) return;
     await window.codexDesk.cancelRun(runId);
+    runIdRef.current = null;
     setRunId(null);
     setStarting(false);
     setStatusText("已停止");
@@ -874,15 +997,8 @@ function ThreadComposer({
   const composerCwd = cwd || selected?.cwd || "";
   const canSend = Boolean(prompt.trim()) && !runId && !starting;
   const currentPlace = selected ? "当前会话" : "新会话";
-  const inheritedModelLabel = selected?.model
-    ? `跟随当前会话（${formatModelName(selected.model)}）`
-    : "跟随 Codex 默认模型";
-  const modelOptions = [
-    { value: "gpt-5-codex", label: "GPT-5 / Codex" },
-    { value: "gpt-5", label: "GPT-5" }
-  ];
-  const knownModelValues = modelOptions.map((option) => option.value);
-  const customSessionModel = selected?.model && !knownModelValues.includes(selected.model) ? selected.model : null;
+  const modelOptions = models.length ? models : FALLBACK_MODEL_OPTIONS;
+  const selectedModelKnown = modelOptions.some((option) => option.id === model);
 
   return (
     <section className="thread-composer" aria-label="Codex 输入区">
@@ -903,7 +1019,7 @@ function ThreadComposer({
           }}
           onKeyDown={(event) => {
             if (isComposing || event.nativeEvent.isComposing || event.key === "Process") return;
-            if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+            if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               void start();
             }
@@ -919,14 +1035,16 @@ function ThreadComposer({
             <select
               className="composer-select"
               value={model}
-              onChange={(event) => setModel(event.target.value)}
+              onChange={(event) => {
+                setModel(event.target.value);
+                window.localStorage.setItem(MODEL_KEY, event.target.value);
+              }}
               title="模型"
             >
-              <option value="">{inheritedModelLabel}</option>
-              {customSessionModel ? <option value={customSessionModel}>{formatModelName(customSessionModel)}</option> : null}
+              {!selectedModelKnown ? <option value={model}>{formatModelName(model)}</option> : null}
               {modelOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
+                <option key={option.id} value={option.id}>
+                  {option.name}
                 </option>
               ))}
             </select>
@@ -997,6 +1115,7 @@ export default function App() {
   const [selected, setSelected] = useState<SessionSummary | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [usage, setUsage] = useState<UsageSnapshot | null>(null);
+  const [models, setModels] = useState<CodexModel[]>(FALLBACK_MODEL_OPTIONS);
   const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
@@ -1026,14 +1145,18 @@ export default function App() {
     const refresh = window.codexDesk
       .listSessions()
       .then((next) => {
-        setSessions(next);
+        const ordered = sortSessions(next);
+        const selectable = showArchived ? ordered : ordered.filter((session) => !session.archived);
+        setSessions(ordered);
         setSelected((current) => {
-          if (!current) return next[0] || null;
-          return next.find((session) =>
+          if (!current) return selectable[0] || null;
+          const matched = ordered.find((session) =>
             session.id === current.id ||
             session.resumeId === current.resumeId ||
             session.filePath === current.filePath
-          ) || next[0] || null;
+          );
+          if (matched && (showArchived || !matched.archived)) return matched;
+          return selectable[0] || null;
         });
       })
       .catch((error) => {
@@ -1046,7 +1169,7 @@ export default function App() {
       });
     sessionRefreshRef.current = refresh;
     return refresh;
-  }, []);
+  }, [showArchived]);
 
   const refreshUsage = useCallback(async () => {
     setLoadingUsage(true);
@@ -1060,6 +1183,9 @@ export default function App() {
   useEffect(() => {
     refreshSessions();
     refreshUsage();
+    window.codexDesk.listModels().then((next) => {
+      if (next.length) setModels(next);
+    }).catch(() => {});
   }, [refreshSessions, refreshUsage]);
 
   const selectedFilePath = selected?.filePath || null;
@@ -1096,6 +1222,41 @@ export default function App() {
     );
     setSelected((current) => (current?.id === result.id ? { ...current, title: result.title } : current));
   }, []);
+
+  const togglePinnedSession = useCallback(async (session: SessionSummary, pinned: boolean) => {
+    const result = await window.codexDesk.pinSession(session.id, session.filePath, pinned);
+    const matches = (item: Pick<SessionSummary, "id" | "resumeId" | "filePath">) =>
+      item.id === session.id || item.resumeId === session.resumeId || item.filePath === session.filePath;
+    const updateSummary = (item: SessionSummary): SessionSummary =>
+      matches(item) ? { ...item, pinned: result.pinned } : item;
+    const updateDetail = (item: SessionDetail): SessionDetail =>
+      matches(item) ? { ...item, pinned: result.pinned } : item;
+    setSessions((current) => sortSessions(current.map(updateSummary)));
+    setSelected((current) => (current ? updateSummary(current) : current));
+    setDetail((current) => (current ? updateDetail(current) : current));
+  }, []);
+
+  const toggleArchiveSession = useCallback(async (session: SessionSummary, archived: boolean) => {
+    const result = await window.codexDesk.archiveSession(session.id, session.filePath, archived);
+    const matches = (item: Pick<SessionSummary, "id" | "resumeId" | "filePath">) =>
+      item.id === session.id || item.resumeId === session.resumeId || item.filePath === session.filePath;
+    const updateSummary = (item: SessionSummary): SessionSummary =>
+      matches(item) ? { ...item, archived: result.archived } : item;
+    const updateDetail = (item: SessionDetail): SessionDetail =>
+      matches(item) ? { ...item, archived: result.archived } : item;
+    const nextSessions = sortSessions(sessions.map(updateSummary));
+    setSessions(nextSessions);
+    if (result.archived && !showArchived) {
+      const replacement = nextSessions.find((item) => !item.archived) || null;
+      setSelected((current) => (current && matches(current) ? replacement : current));
+      setDetail((current) => (current && matches(current) ? null : current));
+    } else {
+      setSelected((current) => (current ? updateSummary(current) : current));
+      setDetail((current) => (current ? updateDetail(current) : current));
+    }
+    setToast(result.archived ? `已归档 ${session.title}` : `已取消归档 ${session.title}`);
+    window.setTimeout(() => setToast(null), 2400);
+  }, [sessions, showArchived]);
 
   const deleteSession = useCallback(async (session: SessionSummary) => {
     const confirmed = window.confirm(`删除这个 session？\n\n${session.title}\n\nJSONL 会移到 deleted_sessions，可手动恢复。`);
@@ -1158,6 +1319,12 @@ export default function App() {
     if (selected) await window.codexDesk.showItem(selected.filePath);
   };
 
+  const startNewSession = useCallback(() => {
+    setSelected(null);
+    setDetail(null);
+    setSessionReloadKey((value) => value + 1);
+  }, []);
+
   return (
     <div className="app-shell" data-theme={theme}>
       <nav className="topbar">
@@ -1175,6 +1342,10 @@ export default function App() {
           会话
         </div>
         <div className="topbar-actions">
+          <button className="link-button primary-action" type="button" onClick={startNewSession}>
+            <Plus size={16} />
+            新会话
+          </button>
           <button
             className="link-button"
             type="button"
@@ -1207,6 +1378,8 @@ export default function App() {
           onRefresh={refreshSessions}
           refreshing={loadingSessions}
           onRename={renameSession}
+          onTogglePinned={togglePinnedSession}
+          onToggleSessionArchived={toggleArchiveSession}
           onDelete={deleteSession}
           onSelect={(session) => {
             setSelected(session);
@@ -1224,6 +1397,7 @@ export default function App() {
           session={detail}
           selected={selected}
           loading={loadingSession}
+          models={models}
           onExport={exportCurrent}
           onShowFile={showFile}
           onRunDone={handleRunDone}

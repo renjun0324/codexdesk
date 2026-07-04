@@ -16,8 +16,166 @@ const codexHomes = [codexHome];
 const sessionsDir = path.join(codexHome, "sessions");
 const deletedSessionsDir = path.join(codexHome, "deleted_sessions");
 const stateDb = path.join(codexHome, "state_5.sqlite");
+const modelsCache = path.join(codexHome, "models_cache.json");
 const runningCodex = new Map();
 let mainWindow = null;
+const CODEX_RUN_IDLE_TIMEOUT_MS = 120000;
+// GUI launches (.desktop / dock) do not inherit the shell proxy, so Codex would
+// reach the OpenAI backend directly. In network-restricted regions that hangs
+// forever in TCP SYN-SENT and the run returns no assistant reply. Fall back to a
+// local proxy unless one is already present. Override or disable via CODEX_DESK_PROXY
+// (set CODEX_DESK_PROXY="" to opt out entirely).
+const fallbackProxy =
+  process.env.CODEX_DESK_PROXY != null
+    ? process.env.CODEX_DESK_PROXY
+    : "http://127.0.0.1:7890";
+const fallbackModels = [
+  { id: "gpt-5.5", name: "GPT-5.5" },
+  { id: "gpt-5-codex", name: "GPT-5 / Codex" },
+  { id: "gpt-5", name: "GPT-5" }
+];
+
+function readProcessArgs(pid) {
+  try {
+    return fsSync.readFileSync(path.join("/proc", String(pid), "cmdline"), "utf8").split("\0").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function listActiveSessionProcesses(sessionId) {
+  const target = String(sessionId || "").trim();
+  if (!target || process.platform !== "linux") return [];
+  let entries = [];
+  try {
+    entries = fsSync.readdirSync("/proc");
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => /^\d+$/.test(entry))
+    .map((entry) => {
+      const pid = Number(entry);
+      const args = readProcessArgs(pid);
+      return { pid, args };
+    })
+    .filter(({ pid, args }) => {
+      if (!args.length || pid === process.pid) return false;
+      const command = args.join(" ");
+      if (!command.includes("codex") || !args.includes(target)) return false;
+      return args.includes("resume") && (args.includes("exec") || args[1] === "resume");
+    });
+}
+
+function descendantPids(rootPid) {
+  if (process.platform !== "linux" || !rootPid) return [];
+  let entries = [];
+  try {
+    entries = fsSync.readdirSync("/proc");
+  } catch {
+    return [];
+  }
+
+  const childrenByParent = new Map();
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    try {
+      const status = fsSync.readFileSync(path.join("/proc", entry, "status"), "utf8");
+      const match = status.match(/^PPid:\s+(\d+)/m);
+      if (!match) continue;
+      const ppid = Number(match[1]);
+      const children = childrenByParent.get(ppid) || [];
+      children.push(pid);
+      childrenByParent.set(ppid, children);
+    } catch {
+      // Process exited while scanning.
+    }
+  }
+
+  const found = [];
+  const stack = [rootPid];
+  while (stack.length) {
+    const current = stack.pop();
+    const children = childrenByParent.get(current) || [];
+    for (const childPid of children) {
+      found.push(childPid);
+      stack.push(childPid);
+    }
+  }
+  return found;
+}
+
+function killCodexRun(child, signal = "SIGTERM") {
+  if (!child?.pid) return;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall back to killing known descendants below.
+    }
+  }
+
+  const pids = [...descendantPids(child.pid).reverse(), child.pid];
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Already exited.
+    }
+  }
+}
+
+function buildCodexEnv() {
+  const env = {};
+  const keepExact = [
+    "HOME",
+    "PATH",
+    "SHELL",
+    "USER",
+    "USERNAME",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "SSH_AUTH_SOCK",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "OPENAI_API_KEY"
+  ];
+  const keepPrefixes = [
+    "CODEX_",
+    "XDG_",
+    "GTK_",
+    "QT_",
+    "SDL_",
+    "CLUTTER_"
+  ];
+  const keepProxy = /^(https?|all|no|wss?|ftp)_proxy$/i;
+
+  for (const key of keepExact) {
+    if (process.env[key] != null) env[key] = process.env[key];
+  }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value == null) continue;
+    if (keepPrefixes.some((prefix) => key.startsWith(prefix)) || keepProxy.test(key)) {
+      env[key] = value;
+    }
+  }
+  const hasProxy = Object.keys(env).some((key) => keepProxy.test(key));
+  if (!hasProxy && fallbackProxy) {
+    env.HTTPS_PROXY = fallbackProxy;
+    env.HTTP_PROXY = fallbackProxy;
+    env.ALL_PROXY = fallbackProxy;
+    if (env.NO_PROXY == null) env.NO_PROXY = "localhost,127.0.0.1,::1";
+  }
+  env.CODEX_HOME = codexHome;
+  return env;
+}
 
 function findProjectCodexHome(startDir) {
   let current = path.resolve(startDir);
@@ -195,7 +353,7 @@ if (!gotSingleInstanceLock) {
 }
 
 app.on("window-all-closed", () => {
-  for (const child of runningCodex.values()) child.kill("SIGTERM");
+  for (const run of runningCodex.values()) killCodexRun(run.child);
   runningCodex.clear();
   if (process.platform !== "darwin") app.quit();
 });
@@ -320,6 +478,14 @@ function titleOverridesPath(targetCodexHome) {
   return path.join(targetCodexHome, "codexdesk-title-overrides.json");
 }
 
+function pinnedSessionsPath(targetCodexHome) {
+  return path.join(targetCodexHome, "codexdesk-pinned-sessions.json");
+}
+
+function archivedSessionsPath(targetCodexHome) {
+  return path.join(targetCodexHome, "codexdesk-archived-sessions.json");
+}
+
 async function readTitleOverrides(targetCodexHome) {
   try {
     const raw = await fs.readFile(titleOverridesPath(targetCodexHome), "utf8");
@@ -342,6 +508,114 @@ async function removeTitleOverride(targetCodexHome, id) {
   const next = { ...overrides };
   delete next[id];
   await fs.writeFile(titleOverridesPath(targetCodexHome), JSON.stringify(next, null, 2), "utf8");
+}
+
+async function readPinnedSessions(targetCodexHome) {
+  try {
+    const raw = await fs.readFile(pinnedSessionsPath(targetCodexHome), "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.map(String).filter(Boolean));
+    }
+    if (Array.isArray(parsed?.pinned)) {
+      return new Set(parsed.pinned.map(String).filter(Boolean));
+    }
+    if (parsed && typeof parsed === "object") {
+      return new Set(
+        Object.entries(parsed)
+          .filter(([, value]) => Boolean(value))
+          .map(([key]) => key)
+      );
+    }
+  } catch {
+    // Missing or malformed pin state is treated as empty.
+  }
+  return new Set();
+}
+
+async function writePinnedSessions(targetCodexHome, ids) {
+  await fs.mkdir(targetCodexHome, { recursive: true });
+  const ordered = [...ids].filter(Boolean).sort();
+  await fs.writeFile(pinnedSessionsPath(targetCodexHome), JSON.stringify(ordered, null, 2), "utf8");
+}
+
+async function writePinnedSession(targetCodexHome, ids, pinned) {
+  const existing = await readPinnedSessions(targetCodexHome);
+  for (const id of ids.filter(Boolean)) {
+    if (pinned) {
+      existing.add(id);
+    } else {
+      existing.delete(id);
+    }
+  }
+  await writePinnedSessions(targetCodexHome, existing);
+}
+
+async function removePinnedSession(targetCodexHome, ...ids) {
+  const existing = await readPinnedSessions(targetCodexHome);
+  let changed = false;
+  for (const id of ids.filter(Boolean)) {
+    changed = existing.delete(id) || changed;
+  }
+  if (changed) await writePinnedSessions(targetCodexHome, existing);
+}
+
+function isPinnedSession(summary, pinnedIds) {
+  return pinnedIds.has(summary.id) || pinnedIds.has(summary.resumeId);
+}
+
+async function readArchivedSessions(targetCodexHome) {
+  try {
+    const raw = await fs.readFile(archivedSessionsPath(targetCodexHome), "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.map(String).filter(Boolean));
+    }
+    if (Array.isArray(parsed?.archived)) {
+      return new Set(parsed.archived.map(String).filter(Boolean));
+    }
+    if (parsed && typeof parsed === "object") {
+      return new Set(
+        Object.entries(parsed)
+          .filter(([, value]) => Boolean(value))
+          .map(([key]) => key)
+      );
+    }
+  } catch {
+    // Missing or malformed archive state is treated as empty.
+  }
+  return new Set();
+}
+
+async function writeArchivedSessions(targetCodexHome, ids) {
+  await fs.mkdir(targetCodexHome, { recursive: true });
+  const ordered = [...ids].filter(Boolean).sort();
+  await fs.writeFile(archivedSessionsPath(targetCodexHome), JSON.stringify(ordered, null, 2), "utf8");
+}
+
+async function writeArchivedSession(targetCodexHome, ids, archived) {
+  const existing = await readArchivedSessions(targetCodexHome);
+  for (const id of ids.filter(Boolean)) {
+    if (archived) {
+      existing.add(id);
+    } else {
+      existing.delete(id);
+    }
+  }
+  await writeArchivedSessions(targetCodexHome, existing);
+}
+
+async function removeArchivedSession(targetCodexHome, ...ids) {
+  const existing = await readArchivedSessions(targetCodexHome);
+  let changed = false;
+  for (const id of ids.filter(Boolean)) {
+    changed = existing.delete(id) || changed;
+  }
+  if (changed) await writeArchivedSessions(targetCodexHome, existing);
+}
+
+function isArchivedSession(summary, archivedIds) {
+  return archivedIds.has(summary.id) || archivedIds.has(summary.resumeId);
 }
 
 function isInsideDir(candidate, parent) {
@@ -545,10 +819,47 @@ function normalizeRateLimitsResponse(response) {
   };
 }
 
+async function listModels() {
+  try {
+    const raw = await fs.readFile(modelsCache, "utf8");
+    const parsed = JSON.parse(raw);
+    const models = Array.isArray(parsed?.models) ? parsed.models : [];
+    const seen = new Set();
+    const normalized = models
+      .filter((model) =>
+        model?.slug &&
+        model.visibility === "list" &&
+        model.supported_in_api !== false
+      )
+      .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
+      .map((model) => ({
+        id: String(model.slug),
+        name: String(model.display_name || model.slug)
+      }))
+      .filter((model) => {
+        if (seen.has(model.id)) return false;
+        seen.add(model.id);
+        return true;
+      });
+    return normalized.length ? normalized : fallbackModels;
+  } catch {
+    return fallbackModels;
+  }
+}
+
+async function resolveRunModel(candidate) {
+  const requested = String(candidate || "").trim();
+  const models = await listModels();
+  const ids = new Set(models.map((model) => model.id));
+  if (requested && ids.has(requested)) return requested;
+  if (ids.has("gpt-5.5")) return "gpt-5.5";
+  return models[0]?.id || "gpt-5.5";
+}
+
 function queryAppServerUsage() {
   return new Promise((resolve) => {
     const child = spawn(codexBinary, ["app-server", "--stdio"], {
-      env: process.env,
+      env: buildCodexEnv(),
       stdio: ["pipe", "pipe", "pipe"]
     });
 
@@ -796,6 +1107,7 @@ function sessionToSummary(session) {
     updatedAt: session.updatedAt,
     tokensUsed: session.tokenUsage?.total?.totalTokens ?? 0,
     archived: false,
+    pinned: Boolean(session.pinned),
     source: session.source
   };
 }
@@ -813,6 +1125,7 @@ function threadRowToSummary(row) {
     updatedAt: Number(row.updatedAt || 0),
     tokensUsed: Number(row.tokensUsed || 0),
     archived: Boolean(row.archived),
+    pinned: false,
     source: row.source || ""
   };
 }
@@ -847,9 +1160,14 @@ function dedupeSessionSummaries(summaries) {
   for (const summary of summaries) {
     const key = sessionIdentityKey(summary);
     const current = byIdentity.get(key);
-    if (!current || summary.updatedAt > current.updatedAt) byIdentity.set(key, summary);
+    if (!current || (summary.pinned && !current.pinned) || summary.updatedAt > current.updatedAt) {
+      byIdentity.set(key, summary);
+    }
   }
-  return [...byIdentity.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...byIdentity.values()].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return b.updatedAt - a.updatedAt;
+  });
 }
 
 async function listSessionsForHome(targetCodexHome) {
@@ -870,12 +1188,19 @@ async function listSessionsForHome(targetCodexHome) {
     .map(threadRowToSummary);
 
   const overrides = await readTitleOverrides(targetCodexHome);
-  const applyOverride = (summary) => {
+  const pinnedIds = await readPinnedSessions(targetCodexHome);
+  const archivedIds = await readArchivedSessions(targetCodexHome);
+  const applySidecars = (summary) => {
     const custom = overrides[summary.id] || overrides[summary.resumeId];
-    return custom ? { ...summary, title: custom } : summary;
+    return {
+      ...summary,
+      title: custom || summary.title,
+      pinned: isPinnedSession(summary, pinnedIds),
+      archived: Boolean(summary.archived) || isArchivedSession(summary, archivedIds)
+    };
   };
 
-  if (!dbSummaries.length) return fileSummaries.map(applyOverride);
+  if (!dbSummaries.length) return dedupeSessionSummaries(fileSummaries.map(applySidecars));
 
   const byFile = new Map(fileSummaries.map((summary) => [sessionSummaryKey(summary), summary]));
   for (const dbSummary of dbSummaries) {
@@ -884,7 +1209,7 @@ async function listSessionsForHome(targetCodexHome) {
     byFile.set(key, fileSummary ? mergeSessionSummary(dbSummary, fileSummary) : dbSummary);
   }
 
-  return dedupeSessionSummaries([...byFile.values()]).map(applyOverride).slice(0, 800);
+  return dedupeSessionSummaries([...byFile.values()].map(applySidecars)).slice(0, 800);
 }
 
 async function listSessions() {
@@ -1134,7 +1459,21 @@ function summarizeRunRecord(record) {
 ipcMain.handle("sessions:list", () => listSessions());
 
 ipcMain.handle("sessions:read", async (_event, filePath) => {
-  return parseSessionFile(filePath);
+  const session = await parseSessionFile(filePath);
+  const targetCodexHome = findCodexHomeForSessionPath(filePath);
+  if (!targetCodexHome) return { ...session, pinned: false, archived: false };
+  const targetPaths = codexHomePaths(targetCodexHome);
+  const pinnedIds = await readPinnedSessions(targetCodexHome);
+  const archivedIds = await readArchivedSessions(targetCodexHome);
+  const rows = await querySqlite(
+    targetPaths.stateDb,
+    `select archived from threads where id = ${sqlString(session.id)} or rollout_path = ${sqlString(filePath)} limit 1`
+  );
+  return {
+    ...session,
+    pinned: isPinnedSession(session, pinnedIds),
+    archived: Boolean(rows[0]?.archived) || isArchivedSession(session, archivedIds)
+  };
 });
 
 ipcMain.handle("sessions:rename", async (_event, id, title) => {
@@ -1152,6 +1491,39 @@ ipcMain.handle("sessions:rename", async (_event, id, title) => {
     writeTitleOverride(targetCodexHome, sessionId, nextTitle).catch(() => false)
   ));
   return { id: sessionId, title: nextTitle };
+});
+
+ipcMain.handle("sessions:pin", async (_event, id, filePath, pinned) => {
+  const sessionId = String(id || "").trim();
+  const sourcePath = String(filePath || "").trim();
+  if (!sessionId) throw new Error("Session id is empty.");
+  if (!sourcePath) throw new Error("Session file path is empty.");
+  const targetCodexHome = findCodexHomeForSessionPath(sourcePath);
+  if (!targetCodexHome) {
+    throw new Error("Refusing to pin a file outside the Codex sessions directory.");
+  }
+  const resumeId = resumeIdFromPath(sourcePath);
+  const nextPinned = Boolean(pinned);
+  await writePinnedSession(targetCodexHome, [sessionId, resumeId], nextPinned);
+  return { id: sessionId, pinned: nextPinned };
+});
+
+ipcMain.handle("sessions:archive", async (_event, id, filePath, archived) => {
+  const sessionId = String(id || "").trim();
+  const sourcePath = String(filePath || "").trim();
+  if (!sessionId) throw new Error("Session id is empty.");
+  if (!sourcePath) throw new Error("Session file path is empty.");
+  const targetCodexHome = findCodexHomeForSessionPath(sourcePath);
+  if (!targetCodexHome) {
+    throw new Error("Refusing to archive a file outside the Codex sessions directory.");
+  }
+  const targetPaths = codexHomePaths(targetCodexHome);
+  const resumeId = resumeIdFromPath(sourcePath);
+  const nextArchived = Boolean(archived);
+  const sql = `update threads set archived = ${nextArchived ? 1 : 0} where id = ${sqlString(sessionId)} or rollout_path = ${sqlString(sourcePath)};`;
+  await execSqlite(targetPaths.stateDb, sql).catch(() => false);
+  await writeArchivedSession(targetCodexHome, [sessionId, resumeId], nextArchived);
+  return { id: sessionId, archived: nextArchived };
 });
 
 ipcMain.handle("sessions:delete", async (_event, id, filePath) => {
@@ -1190,6 +1562,8 @@ delete from threads where id = ${sqlString(sessionId)};
   }
 
   await removeTitleOverride(targetCodexHome, sessionId).catch(() => {});
+  await removePinnedSession(targetCodexHome, sessionId, resumeIdFromPath(sourcePath)).catch(() => {});
+  await removeArchivedSession(targetCodexHome, sessionId, resumeIdFromPath(sourcePath)).catch(() => {});
   return { id: sessionId, deletedPath: destinationPath };
 });
 
@@ -1213,6 +1587,8 @@ ipcMain.handle("sessions:export", async (_event, filePath) => {
 
 ipcMain.handle("usage:get", () => getUsage());
 
+ipcMain.handle("models:list", () => listModels());
+
 ipcMain.handle("shell:openPath", async (_event, targetPath) => {
   return shell.openPath(targetPath);
 });
@@ -1222,28 +1598,28 @@ ipcMain.handle("shell:showItem", (_event, targetPath) => {
   return true;
 });
 
-ipcMain.handle("codex:run", (event, options) => {
+ipcMain.handle("codex:run", async (event, options) => {
   const prompt = String(options?.prompt || "").trim();
   if (!prompt) throw new Error("Prompt is empty.");
 
   const runId = crypto.randomUUID();
   const cwd = options?.cwd || os.homedir();
-  const model = String(options?.model || "").trim();
+  const model = await resolveRunModel(options?.model);
   const sessionId = String(options?.sessionId || "").trim();
+  if (sessionId) {
+    const active = listActiveSessionProcesses(sessionId);
+    if (active.length) {
+      const pids = active.map((item) => item.pid).join(", ");
+      throw new Error(`这个 session 正在被其他 Codex 进程使用（PID ${pids}）。请先退出对应 CLI 窗口，或停止正在运行的桌面任务后再继续。`);
+    }
+  }
   const args = sessionId
     ? ["exec", "resume", "--json", "--all", "--skip-git-repo-check"]
     : ["exec", "--json", "--color", "never", "-C", cwd, "--skip-git-repo-check"];
 
-  if (model) args.push("-m", model);
+  args.push("-m", model);
   if (sessionId) args.push(sessionId, prompt);
   else args.push(prompt);
-
-  const child = spawn(codexBinary, args, {
-    cwd,
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  runningCodex.set(runId, child);
 
   const send = (payload) => {
     if (!event.sender.isDestroyed()) {
@@ -1251,55 +1627,100 @@ ipcMain.handle("codex:run", (event, options) => {
     }
   };
 
-  send({ kind: "started", args: [codexBinary, ...args] });
+  setImmediate(() => {
+    const child = spawn(codexBinary, args, {
+      cwd,
+      env: buildCodexEnv(),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    runningCodex.set(runId, { child, sessionId });
+    send({ kind: "started", args: [codexBinary, ...args] });
 
-  let stdoutBuffer = "";
-  child.stdout.on("data", (chunk) => {
-    stdoutBuffer += chunk.toString("utf8");
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() || "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const record = parseJsonLine(line);
-      send({
-        kind: "record",
-        raw: line,
-        record: record || null,
-        summary: record ? summarizeRunRecord(record) : { kind: "stdout", text: line }
-      });
-    }
-  });
+    let stdoutBuffer = "";
+    let sawAssistantMessage = false;
+    let timedOut = false;
+    let closed = false;
+    let idleTimer = null;
+    const clearIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = null;
+    };
+    const armIdleTimer = () => {
+      clearIdleTimer();
+      idleTimer = setTimeout(() => {
+        if (closed) return;
+        timedOut = true;
+        send({
+          kind: "error",
+          text: "Codex 已超过 120 秒没有返回有效输出，桌面版已停止这次运行。通常是 Codex CLI 后台刷新模型或远程 MCP 通道卡住，重新发送即可；如果这个 session 同时开在 CLI，请先退出那个 CLI 窗口。"
+        });
+        killCodexRun(child);
+      }, CODEX_RUN_IDLE_TIMEOUT_MS);
+    };
+    armIdleTimer();
 
-  child.stderr.on("data", (chunk) => {
-    send({ kind: "stderr", text: chunk.toString("utf8") });
-  });
+    child.stdout.on("data", (chunk) => {
+      armIdleTimer();
+      stdoutBuffer += chunk.toString("utf8");
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const record = parseJsonLine(line);
+        const summary = record ? summarizeRunRecord(record) : { kind: "stdout", text: line };
+        if (summary.kind === "message" && summary.role === "assistant") sawAssistantMessage = true;
+        send({
+          kind: "record",
+          raw: line,
+          record: record || null,
+          summary
+        });
+      }
+    });
 
-  child.on("error", (error) => {
-    runningCodex.delete(runId);
-    send({ kind: "error", text: error.message });
-  });
+    child.stderr.on("data", (chunk) => {
+      send({ kind: "stderr", text: chunk.toString("utf8") });
+    });
 
-  child.on("close", (code, signal) => {
-    runningCodex.delete(runId);
-    if (stdoutBuffer.trim()) {
-      const record = parseJsonLine(stdoutBuffer.trim());
-      send({
-        kind: "record",
-        raw: stdoutBuffer.trim(),
-        record: record || null,
-        summary: record ? summarizeRunRecord(record) : { kind: "stdout", text: stdoutBuffer.trim() }
-      });
-    }
-    send({ kind: "done", code, signal });
+    child.on("error", (error) => {
+      closed = true;
+      clearIdleTimer();
+      runningCodex.delete(runId);
+      send({ kind: "error", text: error.message });
+    });
+
+    child.on("close", (code, signal) => {
+      closed = true;
+      clearIdleTimer();
+      runningCodex.delete(runId);
+      if (stdoutBuffer.trim()) {
+        const record = parseJsonLine(stdoutBuffer.trim());
+        const summary = record ? summarizeRunRecord(record) : { kind: "stdout", text: stdoutBuffer.trim() };
+        if (summary.kind === "message" && summary.role === "assistant") sawAssistantMessage = true;
+        send({
+          kind: "record",
+          raw: stdoutBuffer.trim(),
+          record: record || null,
+          summary
+        });
+      }
+      if (!timedOut && code === 0 && !sawAssistantMessage) {
+        send({
+          kind: "error",
+          text: "Codex 进程已结束，但没有收到助手回复。请看上方日志；如果日志包含模型刷新或 MCP 通道错误，直接重新发送通常可以恢复。"
+        });
+      }
+      send({ kind: "done", code, signal });
+    });
   });
 
   return { runId };
 });
 
 ipcMain.handle("codex:cancel", (_event, runId) => {
-  const child = runningCodex.get(runId);
-  if (!child) return false;
-  child.kill("SIGTERM");
+  const run = runningCodex.get(runId);
+  if (!run) return false;
+  killCodexRun(run.child);
   runningCodex.delete(runId);
   return true;
 });

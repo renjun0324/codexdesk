@@ -245,6 +245,18 @@ button {
   box-shadow: 0 1px 0 var(--inset-highlight) inset;
 }
 
+.link-button.primary-action {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.link-button.primary-action:hover {
+  color: #ffffff;
+  background: color-mix(in srgb, var(--accent) 88%, #000000);
+  border-color: color-mix(in srgb, var(--accent) 88%, #000000);
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -550,7 +562,7 @@ body.resizing-rail .rail-resizer {
   position: relative;
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  grid-template-columns: minmax(0, 1fr) 30px;
   gap: 6px;
   align-items: start;
   width: 100%;
@@ -561,6 +573,18 @@ body.resizing-rail .rail-resizer {
   background: var(--rail-item-bg);
   border: 1px solid var(--rail-item-border);
   border-radius: 8px;
+}
+
+.session-item.pinned {
+  border-color: rgb(37 138 124 / 35%);
+}
+
+.session-item.archived {
+  opacity: 0.68;
+}
+
+.app-shell[data-theme="dark"] .session-item.pinned {
+  border-color: rgb(73 183 167 / 32%);
 }
 
 .session-item.active {
@@ -590,6 +614,14 @@ body.resizing-rail .rail-resizer {
   cursor: pointer;
 }
 
+.session-actions {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+}
+
+.pin-button,
+.archive-button,
 .rename-button,
 .delete-button,
 .rename-action {
@@ -605,16 +637,40 @@ body.resizing-rail .rail-resizer {
   opacity: 0.72;
 }
 
+.pin-button.pinned {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: rgb(37 138 124 / 42%);
+  opacity: 1;
+}
+
 .session-item.active .rename-button,
 .session-item.active .delete-button,
+.session-item.active .pin-button,
+.session-item.active .archive-button,
 .session-item.active .rename-action {
   background: var(--rail-item-active-control-bg);
   border-color: var(--rail-item-active-control-border);
 }
 
+.session-item.active .pin-button.pinned {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: rgb(37 138 124 / 34%);
+}
+
+.pin-button:hover,
+.archive-button:hover,
 .rename-button:hover,
 .delete-button:hover,
 .rename-action:hover {
+  opacity: 1;
+}
+
+.archive-button.archived {
+  color: var(--accent-3);
+  background: color-mix(in srgb, var(--accent-3) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent-3) 38%, transparent);
   opacity: 1;
 }
 
