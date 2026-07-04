@@ -8,8 +8,7 @@
 
 **一个聚焦会话管理和公式阅读的 Codex Linux 桌面端。**
 
-Codex Desk 刻意做得很克制：管理和导出本地 Codex 会话，并把 Markdown 与公式排好版。
-它不想把一个历史查看器做成另一个 Git 面板、项目管理器或复杂集成平台。
+管理和导出本地 Codex 会话，显示实时流量使用情况。
 
 <sub>Electron · React 19 · Vite · TypeScript</sub>
 
@@ -95,35 +94,6 @@ npm run dev
 
 `scripts/launch-codexdesk.sh` 会带着固定的 `CODEX_HOME` 启动应用。把一个 `.desktop`
 条目的 `Exec` 指向它、`Icon` 指向 `assets/codexdesk.svg` 即可。
-
-## 工作原理
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Electron 主进程  (electron/main.cjs)                          │
-│   • 读取  CODEX_HOME/state_5.sqlite + sessions/**/*.jsonl     │
-│   • 拉起 codex exec / app-server                              │
-│   • sidecar 状态  (标题、置顶、归档)                           │
-└───────────────▲───────────────────────────┬──────────────────┘
-                │ 上下文隔离的 IPC           │ window.codexDesk.*
-        ┌───────┴───────┐          ┌─────────▼─────────┐
-        │ preload.cjs   │          │ React 渲染进程     │
-        │ (安全桥接)     │          │ (Vite build → dist)│
-        └───────────────┘          └───────────────────┘
-```
-
-渲染进程从不直接碰文件系统或子进程——一切都走 preload 暴露出来的一小组明确的 IPC
-接口（`sessions:*`、`usage:get`、`codex:run`、`shell:*`）。
-
-## 数据与隐私
-
-- 会话数据从你本地的 `CODEX_HOME` 读取。当前 Linux 启动脚本会显式设置 `CODEX_HOME`，
-  需要时改成你自己的 Codex 目录；如果没有显式设置，应用会向上查找项目内的 `.codex`，
-  最后才回退到应用目录下的 `.codex`。
-- 改名会更新 Codex 的本地 `threads` 索引**并**写一份 app 独占的 sidecar 文件；
-  置顶和归档状态也存在 sidecar 文件里。删除会把 JSONL 移到 `deleted_sessions/`
-  并移除对应的索引行。
-- 不往任何地方上传。导出默认到 `~/文档/codex-exports/`。
 
 ## 技术栈
 
