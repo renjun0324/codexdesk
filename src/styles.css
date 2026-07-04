@@ -454,7 +454,7 @@ body.resizing-rail .rail-resizer {
 
 .rail-top {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: minmax(0, 1fr) 38px 38px;
   gap: 8px;
 }
 
@@ -591,6 +591,30 @@ body.resizing-rail .rail-resizer {
   color: var(--rail-item-active-ink);
   background: var(--rail-item-active-bg);
   border-color: var(--rail-item-active-bg);
+}
+
+.sessions-collapsed .session-list {
+  gap: 5px;
+}
+
+.sessions-collapsed .session-item {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.sessions-collapsed .session-content,
+.sessions-collapsed .session-main {
+  gap: 0;
+}
+
+.sessions-collapsed .session-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-line-clamp: unset;
 }
 
 .session-content {

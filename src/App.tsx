@@ -7,6 +7,8 @@ import {
   Edit3,
   ExternalLink,
   FolderOpen,
+  ListCollapse,
+  ListTree,
   MessageSquare,
   Moon,
   Pin,
@@ -51,6 +53,7 @@ const shortNumber = new Intl.NumberFormat("zh-CN", {
 const RAIL_WIDTH_KEY = "codexdesk.sessionRailWidth";
 const THEME_KEY = "codexdesk.theme";
 const MODEL_KEY = "codexdesk.model";
+const SESSION_LIST_COLLAPSED_KEY = "codexdesk.sessionListCollapsed";
 const DEFAULT_RAIL_WIDTH = 330;
 const MIN_RAIL_WIDTH = 260;
 const MAX_RAIL_WIDTH = 560;
@@ -79,6 +82,11 @@ function readStoredTheme(): ThemeMode {
   const stored = window.localStorage.getItem(THEME_KEY);
   if (stored === "light" || stored === "dark") return stored;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function readStoredSessionListCollapsed() {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(SESSION_LIST_COLLAPSED_KEY) === "true";
 }
 
 function readStoredModel() {
@@ -111,6 +119,10 @@ function formatFullDate(value?: number | null) {
 
 function basename(filePath: string) {
   return filePath.split("/").filter(Boolean).pop() || filePath;
+}
+
+function getCompactSessionTitle(title: string) {
+  return title.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || title.trim() || "未命名 session";
 }
 
 function sortSessions(sessions: SessionSummary[]) {
@@ -190,12 +202,37 @@ function Metric({ label, value }: { label: string; value: number | string }) {
   );
 }
 
+function shouldRenderEscapedDollarMath(body: string) {
+  const trimmed = body.trim();
+  if (!trimmed) return false;
+  return /^[A-Za-z\\{]/.test(trimmed) || /[=^_{}\\]/.test(trimmed) || /^[0-9.\s]+[+\-*/=^_]/.test(trimmed);
+}
+
+function normalizeMathDelimiters(text: string) {
+  return text
+    .split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g)
+    .map((segment) => {
+      if (!segment || segment.startsWith("```") || segment.startsWith("~~~") || segment.startsWith("`")) {
+        return segment;
+      }
+
+      return segment
+        .replace(/\\\[([\s\S]*?)\\\]/g, (_match: string, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`)
+        .replace(/\\\(([^\n]*?)\\\)/g, (_match: string, body: string) => `$${body.trim()}$`)
+        .replace(/\\\$([^\n$]*?)\\\$/g, (match: string, body: string) =>
+          shouldRenderEscapedDollarMath(body) ? `$${body.trim()}$` : match
+        );
+    })
+    .join("");
+}
+
 function MarkdownBlock({ text }: { text: string }) {
-  const safeText = typeof text === "string" ? text : JSON.stringify(text, null, 2);
+  const rawText = typeof text === "string" ? text : JSON.stringify(text, null, 2);
+  const safeText = normalizeMathDelimiters(rawText);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex]}
+      rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
       components={{
         code({ className, children }) {
           const inline = !className;
@@ -268,8 +305,10 @@ function SessionList({
   selected,
   query,
   showArchived,
+  collapsed,
   onQuery,
   onToggleArchived,
+  onToggleCollapsed,
   onSelect,
   onRename,
   onTogglePinned,
@@ -282,8 +321,10 @@ function SessionList({
   selected: string | null;
   query: string;
   showArchived: boolean;
+  collapsed: boolean;
   onQuery: (value: string) => void;
   onToggleArchived: (value: boolean) => void;
+  onToggleCollapsed: () => void;
   onSelect: (session: SessionSummary) => void;
   onRename: (session: SessionSummary, title: string) => Promise<void>;
   onTogglePinned: (session: SessionSummary, pinned: boolean) => Promise<void>;
@@ -363,12 +404,21 @@ function SessionList({
   };
 
   return (
-    <aside className="session-rail">
+    <aside className={`session-rail ${collapsed ? "sessions-collapsed" : ""}`}>
       <div className="rail-top">
         <div className="search-box">
           <Search size={16} />
           <input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="搜索" />
         </div>
+        <button
+          className="icon-button"
+          type="button"
+          title={collapsed ? "展开全部会话" : "折叠全部会话"}
+          aria-label={collapsed ? "展开全部会话" : "折叠全部会话"}
+          onClick={onToggleCollapsed}
+        >
+          {collapsed ? <ListTree size={17} /> : <ListCollapse size={17} />}
+        </button>
         <button className="icon-button" type="button" title={refreshing ? "正在刷新" : "刷新"} onClick={onRefresh}>
           <RefreshCcw size={17} className={refreshing ? "spin" : ""} />
         </button>
@@ -385,6 +435,7 @@ function SessionList({
       <div className="session-list">
         {filtered.map((session) => {
           const editing = editingId === session.id;
+          const compactTitle = getCompactSessionTitle(session.title);
           return (
             <article
               className={`session-item ${selected === session.id ? "active" : ""} ${session.pinned ? "pinned" : ""} ${session.archived ? "archived" : ""}`}
@@ -418,66 +469,76 @@ function SessionList({
                 <>
                   <div className="session-content">
                     <button className="session-main" type="button" onClick={() => onSelect(session)}>
-                      <span className="session-title" title={session.title}>{session.title}</span>
-                      {session.cwd ? (
+                      <span className="session-title" title={session.title}>
+                        {collapsed ? compactTitle : session.title}
+                      </span>
+                      {!collapsed && session.cwd ? (
                         <span className="session-workdir" title={session.cwd}>
                           <FolderOpen size={12} />
                           <span>{basename(session.cwd)}</span>
                         </span>
                       ) : null}
-                      <span className="session-preview" title={session.preview || session.cwd}>
-                        {session.preview || session.cwd}
+                      {!collapsed ? (
+                        <>
+                          <span className="session-preview" title={session.preview || session.cwd}>
+                            {session.preview || session.cwd}
+                          </span>
+                          <span className="session-meta">
+                            <span>{formatDate(session.updatedAt)}</span>
+                            <span>{formatShort(session.tokensUsed)}</span>
+                          </span>
+                        </>
+                      ) : null}
+                    </button>
+                    {!collapsed ? (
+                      <span className="session-resume-row">
+                        <code className="session-resume-id" title={`codex resume ${session.resumeId || session.id}`}>
+                          {session.resumeId || session.id}
+                        </code>
                       </span>
-                      <span className="session-meta">
-                        <span>{formatDate(session.updatedAt)}</span>
-                        <span>{formatShort(session.tokensUsed)}</span>
-                      </span>
-                    </button>
-                  <span className="session-resume-row">
-                    <code className="session-resume-id" title={`codex resume ${session.resumeId || session.id}`}>
-                      {session.resumeId || session.id}
-                    </code>
-                  </span>
+                    ) : null}
                   </div>
-                  <div className="session-actions">
-                    <button
-                      className={`pin-button ${session.pinned ? "pinned" : ""}`}
-                      type="button"
-                      title={session.pinned ? "取消置顶" : "置顶"}
-                      aria-label={session.pinned ? "取消置顶" : "置顶"}
-                      onClick={() => void togglePinned(session)}
-                      disabled={pinningId === session.id}
-                    >
-                      <Pin size={15} fill={session.pinned ? "currentColor" : "none"} />
-                    </button>
-                    <button
-                      className={`archive-button ${session.archived ? "archived" : ""}`}
-                      type="button"
-                      title={session.archived ? "取消归档" : "归档"}
-                      aria-label={session.archived ? "取消归档" : "归档"}
-                      onClick={() => void toggleArchived(session)}
-                      disabled={archivingId === session.id}
-                    >
-                      {session.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
-                    </button>
-                    <button
-                      className="rename-button"
-                      type="button"
-                      title="重命名"
-                      onClick={() => beginRename(session)}
-                    >
-                      <Edit3 size={15} />
-                    </button>
-                    <button
-                      className="delete-button"
-                      type="button"
-                      title="删除"
-                      onClick={() => void deleteSession(session)}
-                      disabled={deletingId === session.id}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
+                  {!collapsed ? (
+                    <div className="session-actions">
+                      <button
+                        className={`pin-button ${session.pinned ? "pinned" : ""}`}
+                        type="button"
+                        title={session.pinned ? "取消置顶" : "置顶"}
+                        aria-label={session.pinned ? "取消置顶" : "置顶"}
+                        onClick={() => void togglePinned(session)}
+                        disabled={pinningId === session.id}
+                      >
+                        <Pin size={15} fill={session.pinned ? "currentColor" : "none"} />
+                      </button>
+                      <button
+                        className={`archive-button ${session.archived ? "archived" : ""}`}
+                        type="button"
+                        title={session.archived ? "取消归档" : "归档"}
+                        aria-label={session.archived ? "取消归档" : "归档"}
+                        onClick={() => void toggleArchived(session)}
+                        disabled={archivingId === session.id}
+                      >
+                        {session.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
+                      </button>
+                      <button
+                        className="rename-button"
+                        type="button"
+                        title="重命名"
+                        onClick={() => beginRename(session)}
+                      >
+                        <Edit3 size={15} />
+                      </button>
+                      <button
+                        className="delete-button"
+                        type="button"
+                        title="删除"
+                        onClick={() => void deleteSession(session)}
+                        disabled={deletingId === session.id}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ) : null}
                 </>
               )}
             </article>
@@ -1125,6 +1186,7 @@ export default function App() {
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [railWidth, setRailWidth] = useState(readStoredRailWidth);
   const [theme, setTheme] = useState<ThemeMode>(readStoredTheme);
+  const [sessionsCollapsed, setSessionsCollapsed] = useState(readStoredSessionListCollapsed);
   const sessionRefreshRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
@@ -1135,6 +1197,14 @@ export default function App() {
     setTheme((current) => {
       const next = current === "dark" ? "light" : "dark";
       window.localStorage.setItem(THEME_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const toggleSessionsCollapsed = useCallback(() => {
+    setSessionsCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem(SESSION_LIST_COLLAPSED_KEY, String(next));
       return next;
     });
   }, []);
@@ -1373,8 +1443,10 @@ export default function App() {
           selected={selected?.id || null}
           query={query}
           showArchived={showArchived}
+          collapsed={sessionsCollapsed}
           onQuery={setQuery}
           onToggleArchived={setShowArchived}
+          onToggleCollapsed={toggleSessionsCollapsed}
           onRefresh={refreshSessions}
           refreshing={loadingSessions}
           onRename={renameSession}
