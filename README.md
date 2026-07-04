@@ -6,9 +6,9 @@
 
 # Codex Desk
 
-**一个聚焦会话管理和公式阅读的 Codex Linux 桌面端。**
+**Codex Linux 桌面端。**
 
-管理和导出本地 Codex 会话，显示实时流量使用情况。
+管理和导出本地 Codex 会话，实时显示流量使用情况。
 
 <sub>Electron · React 19 · Vite · TypeScript</sub>
 
